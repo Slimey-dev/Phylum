@@ -54,5 +54,25 @@ cp -r "$build/data" "$server/"
 [ -d "$build/storage/template_png" ] && cp -r "$build/storage/template_png" "$server/storage/"
 [ -d "$build/storage/www" ] && cp -r "$build/storage/www" "$server/storage/"
 
+# recap_parser's export misses the AI's gambits and breaks some nouns, classes and levels;
+# these rewrite them from the game's own AssetData_Binary.package. Both are safe to run again.
+scripts=$(realpath "$(dirname "$0")/..")
+game=$(dirname "$game_bin")
+if [ ! -d "$server/data/serverdata" ]; then
+	echo "No extracted game data yet. Once there is, run from $scripts:"
+	echo "  python3 -I phase_gambits.py --game \"$game\" && python3 -I serverdata_fix.py --game \"$game\""
+elif ! command -v python3 >/dev/null; then
+	echo "python3 not found, so the game data was not repaired (see $scripts/serverdata_fix.py)." >&2
+else
+	log="$server/data_repair.log"
+	: > "$log"
+	for fix in phase_gambits.py serverdata_fix.py; do
+		echo "Repairing game data with $fix (details in $log)"
+		python3 -I "$scripts/$fix" --game "$game" >> "$log" ||
+			echo "$fix failed, see $log; that part of the data stays as it was exported." >&2
+	done
+	grep -E '^[a-z][a-z ]*:' "$log" || true
+fi
+
 echo "Done. Hooks point at port $port."
 echo "Start the server from $server with ./recap_server, then run RecapLauncher.exe --no-server under Proton."

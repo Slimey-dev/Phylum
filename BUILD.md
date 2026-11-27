@@ -59,3 +59,7 @@ Needs no Visual Studio install. From PowerShell, in `scripts/windows`:
    ```powershell
    python ..\phase_gambits.py --game "C:\Program Files (x86)\Steam\steamapps\common\Darkspore"
    ```
+5. Then run `serverdata_fix.py` the same way. The export also breaks the 35 nouns that have elite variants, ZelemBasicRanged among them, which then spawn with no health or AI. It also leaves challengeValue out of every non-player class and drops each markerset's variant group and weight from the levels. The script checks its decoding against the correctly exported files before it writes anything. Add `--dry-run` to see what it would change. On Linux, `scripts/linux/install.sh` runs both scripts when the game data is already extracted.
+   ```powershell
+   python ..\serverdata_fix.py --game "C:\Program Files (x86)\Steam\steamapps\common\Darkspore"
+   ```
