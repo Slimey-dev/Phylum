@@ -490,6 +490,8 @@ namespace {
 				CheckCastEndedFromItselfEndsAtItsWait();
 				CheckCastKeepsItsTargetPoint();
 				CheckTeleportBreaksRoot();
+				CheckTeleportMovesAndIsSent(false);
+				CheckTeleportMovesAndIsSent(true);
 				CheckChannelEndsOnNewAction();
 				CheckLostModifierEndsWatcher(slow);
 				CheckSwapEndsFieldMedicBuff();
@@ -954,6 +956,39 @@ namespace {
 				Report("teleport-breaks-root", started && keptByFace && broken && entangleStays,
 					"started=" + std::to_string(started) + " keptByFace=" + std::to_string(keptByFace) +
 					" broken=" + std::to_string(broken) + " entangleStays=" + std::to_string(entangleStays));
+			}
+
+			// The client's TeleportObject (0xa09a90) places the object and sends ObjectTeleport to every
+			// client at once, the mover's own included (0xa20110). Its locomotion goal has to be the
+			// destination too: a hero's own client also takes the next locomotion update (0x539900), and
+			// one that still held the old spot kept heroes standing on the teleporter pad. A hero is
+			// player-controlled, so MoveObject also sends it a LocomotionDataUpdate.
+			void CheckTeleportMovesAndIsSent(bool playerControlled) {
+				const char* name = playerControlled ? "teleport-moves-hero-and-is-sent" : "teleport-moves-and-is-sent";
+				auto agent = Spawn();
+				if (!agent || !agent->HasLocomotionData()) {
+					Report(name, false, "no agent");
+					return;
+				}
+				if (playerControlled) {
+					agent->SetPlayerIndex(0);
+				}
+
+				const auto to = agent->GetPosition() + glm::vec3(5.f, -3.f, 0.f);
+				mPackets->clear();
+				sol::protected_function teleport = mState["nLocomotion"]["TeleportObject"];
+				teleport(agent->GetId(), to.x, to.y, to.z);
+
+				const bool placed = glm::distance(agent->GetPosition(), to) < 0.01f;
+				const bool goal = glm::distance(agent->GetLocomotionData()->GetGoalPosition(), to) < 0.01f;
+				const bool teleportSent = Saw("ObjectTeleport");
+				const bool updateSent = !playerControlled || Saw("LocomotionDataUpdate");
+				Report(name, placed && goal && teleportSent && updateSent,
+					std::format("placed={} goal={} teleportSent={} updateSent={}", placed, goal, teleportSent, updateSent));
+
+				// A player-controlled object left in the world changes the checks after this one.
+				agent->SetPlayerIndex(0xFF);
+				agent->MarkForDeletion();
 			}
 
 			// A channel that ends on StartedNewAction, as Sleeping Cloud's does, survives its own start,

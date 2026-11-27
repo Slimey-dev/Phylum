@@ -422,16 +422,26 @@ namespace LuaFunction {
 					events->BreakRoot(object->GetId());
 				}
 
+				// 0xa09b39: inc [object+0x58].
 				object->SetInputSyncStamp(object->GetInputSyncStamp() + 1);
 
 				const auto& locomotion = object->GetLocomotionData();
-				locomotion->Stop();
+				const glm::vec3 direction = position - object->GetPosition();
 
-				const auto& direction = position - object->GetPosition();
-				object->SetPosition(position);
+				// As the client: it stops (0xa14d70), places the object (0x9d9690) and sends ObjectTeleport
+				// to every client, the mover's own included (0xa20110), which the hero's client takes
+				// (0x5392f0). Stop alone keeps its goal where the object stood, and the next update sent a
+				// hero's own client that goal (0x020 at the old spot), so a hero never left a teleporter.
+				// TeleportAndFace sets the goal to the destination first; with no direction it keeps the
+				// orientation, as the client does.
+				locomotion->TeleportAndFace(position, glm::vec3(0.f));
+				game.MoveObject(object, *locomotion);
 
 				if (keepFacing.value_or(false)) {
-					locomotion->SetFacing(direction + object->GetPosition());
+					// 0xa09b9a: then it faces the way it went. Only after the move: SetFacing replaces the
+					// teleport flag, and before MoveObject it would turn the teleport into a walk. It goes
+					// out with the next locomotion update.
+					locomotion->SetFacing(object->GetPosition() + direction);
 				}
 			}
 		}
