@@ -23,7 +23,9 @@
 #include "utils/log.h"
 
 #include <algorithm>
+#include <format>
 #include <optional>
+#include <utility>
 
 // difficulty tuning
 
@@ -335,15 +337,35 @@ namespace Game {
 	}
 
 	// AI
-	AI::AI(Object& object) : mObject(object), mBehavior(object) {}
+	AI::AI(Object& object) : mObject(object), mBehavior(object) {
+		InitBrain();
+	}
 
 	namespace {
 		// How often an AI with gambits picks one: its conditions are scripts. A judgement call;
-		// the client's AI does not run there, and Darkspin re-picks on each attack.
+		// the client's AI does not run there, and Darkspin re-picks on each attack. The client's
+		// blackboard keeps 500 and rand(500) (+8, +0xc), which no client code reads; a mob's first
+		// think is spread over the period by its id instead.
 		constexpr uint64_t thinkMilliseconds = 250;
 
 		// Turns smaller than this are not worth an orientation update.
 		constexpr float turnRadians = 0.01f;
+
+		// Approximate: a cast that needs its agent holds it no longer than this. A script that never
+		// ends (one waiting on something the server lacks) would otherwise freeze its agent for good.
+		constexpr uint64_t longestHoldMilliseconds = 10000;
+
+		// How far beyond a range to look for creatures, so a big one whose edge is inside still counts.
+		constexpr float footprintSlack = 5.f;
+
+		const char* StimulusName(AggroStimulus stimulus) {
+			switch (stimulus) {
+				case AggroStimulus::FirstAggro: return " stimulus=FirstAggro";
+				case AggroStimulus::FirstAlert: return " stimulus=FirstAlert";
+				case AggroStimulus::SubsequentAggro: return " stimulus=SubsequentAggro";
+				default: return "";
+			}
+		}
 	}
 
 	void AI::OnTick() {
@@ -354,18 +376,43 @@ namespace Game {
 				mDead = true;
 				mPursuedId = 0;
 				mBehavior.Exit();
+				if (UsesBrain()) {
+					Die();
+				}
 			}
 			return;
 		}
-		mDead = false;
+		if (mDead) {
+			mDead = false;
+			// Brought back (a Zelem repair): nBehavior_Death's exit undoes what it did, and the agent
+			// fights the ones it listed again.
+			if (UsesBrain()) {
+				mBehavior.Exit();
+				for (const auto id : mAggro.GetIds()) {
+					RefreshAttackers(id);
+				}
+			}
+		}
 
-		if (RunsGambits(mObject)) {
-			Think();
-		} else {
+		// Hidden at creation for a brain it turned out not to run (a hero's summon).
+		if (mHiddenAtSpawn && !UsesBrain()) {
+			mHiddenAtSpawn = false;
+			mObject.SetVisible(true);
+		}
+
+		if (!RunsGambits(mObject)) {
 			// A summon whose hero is gone leaves its behavior with its gambits.
 			mBehavior.Exit();
 			TickWithoutGambits();
+		} else if (UsesBrain()) {
+			Brain();
+		} else {
+			Think();
 		}
+	}
+
+	bool AI::UsesBrain() const {
+		return RunsGambits(mObject) && !IsHeroSummon(mObject);
 	}
 
 	void AI::Think() {
@@ -478,6 +525,13 @@ namespace Game {
 
 	void AI::OnRemoved() {
 		mBehavior.Exit();
+
+		// It fights nobody any more.
+		const auto ids = mAggro.GetIds();
+		mAggro.Clear();
+		for (const auto id : ids) {
+			RefreshAttackers(id);
+		}
 	}
 
 	const Phase* AI::CurrentPhase(const AIDefinition& definition) const {
@@ -492,6 +546,10 @@ namespace Game {
 	}
 
 	std::vector<uint32_t> AI::GetAggroList() const {
+		if (UsesBrain()) {
+			return mAggro.GetIds();
+		}
+
 		const auto& data = mObject.GetNoun()->GetNonPlayerClassData();
 		const float radius = data ? data->GetAggroRange() : 0.f;
 		if (radius <= 0) {
@@ -520,16 +578,134 @@ namespace Game {
 
 	bool AI::InPerceptionCircle(const glm::vec3& point, float radius) const {
 		const auto& data = mObject.GetNoun()->GetNonPlayerClassData();
-		const float circle = data ? data->GetAggroRange() : 0.f;
+		static const bool brainMobs = Config::GetBool(ConfigKey::CONFIG_AI_MOBS);
+		if (!brainMobs) {
+			// With AI_MOBS off, pets and summons keep the circle they had before the brain: the aggro
+			// range, around an owner if any.
+			const float circle = data ? data->GetAggroRange() : 0.f;
+			const auto owner = mObject.GetOwnerObject();
+			const auto& center = owner ? owner->GetPosition() : mObject.GetPosition();
+			return circle > glm::distance(point, center) - radius;
+		}
+		const float circle = data ? PerceptionRadius(true, data->GetAggroRange(), data->GetAlertRange()) : PerceptionRadius(false, 0.f, 0.f);
 
+		// A pet's circle goes with its owner (NonPlayerClass.playerPet). A hero's summon that is not
+		// marked a pet keeps its owner's too, as before: PetTargeting walks Sage's saplings back to it.
 		const auto owner = mObject.GetOwnerObject();
-		const auto& center = owner ? owner->GetPosition() : mObject.GetPosition();
-		return circle > glm::distance(point, center) - radius;
+		const bool aroundOwner = owner && ((data && data->IsPet()) || IsHeroSummon(mObject));
+		const glm::vec3 center = aroundOwner ? owner->GetPosition() : mObject.GetPosition();
+		return TouchesCircle(center, circle, point, radius);
 	}
 
 	ObjectPtr AI::GetBestTarget() const {
-		const auto ids = GetAggroList();
-		return ids.empty() ? nullptr : mObject.GetObjectManager().Get(ids.front());
+		const auto& manager = mObject.GetObjectManager();
+		if (!UsesBrain()) {
+			const auto ids = GetAggroList();
+			return ids.empty() ? nullptr : manager.Get(ids.front());
+		}
+
+		const auto lookup = [&manager](uint32_t id) -> std::optional<AggroCandidate> {
+			const auto object = manager.Get(id);
+			if (!object) {
+				return std::nullopt;
+			}
+			return AggroCandidate {
+				.hasBlackboard = object->HasAgentBlackboardData(),
+				.targetable = object->IsTargetable(),
+				.stealthed = object->GetStealthType() != StealthType::None,
+				.combatant = object->HasCombatantData(),
+				.intangible = object->GetAttributeValue(AttributeType::Intangible) > 0
+			};
+		};
+		// Attribute 0x22 lets the agent see stealthed targets.
+		const bool detectsStealth = mObject.GetAttributeValue(AttributeType::StealthDetection) > 0;
+		const auto id = mAggro.BestTarget(lookup, detectsStealth);
+		return id != 0 ? manager.Get(id) : nullptr;
+	}
+
+	void AI::AddAggro(uint32_t sourceId, float amount, uint32_t flags, std::string_view reason) {
+		auto& game = mObject.GetGame();
+		const auto source = mObject.GetObjectManager().Get(sourceId);
+		const float increase = source ? source->GetAttributeValue(AttributeType::AggroIncrease) : 0.f;
+		const float decrease = source ? source->GetAttributeValue(AttributeType::AggroDecrease) : 0.f;
+
+		const bool listed = mAggro.Contains(sourceId);
+		const auto stimulus = mAggro.Add(sourceId, amount, flags, increase, decrease, game.GetTime(), utils::random::get<float>(0.f, 1.f));
+		if (!listed && mAggro.Contains(sourceId)) {
+			game.GetLua().Trace(std::format("AGGRO object={} source={} threat={:.2f} reason={}{}",
+				mObject.GetId(), sourceId, mAggro.Get(sourceId), reason, StimulusName(stimulus)));
+			RefreshAttackers(sourceId);
+		}
+		React(stimulus);
+
+		// INFERRED: an agent that first aggroes alerts its allies; the client has AlertObject and an
+		// alertRange that only widens the perception circle, but nothing that calls the one with the other.
+		if (stimulus == AggroStimulus::FirstAggro) {
+			AlertAllies(sourceId);
+		}
+	}
+
+	void AI::AlertObject(uint32_t sourceId, bool late) {
+		const bool listed = mAggro.Contains(sourceId);
+		const auto stimulus = late
+			? mAggro.Alert(sourceId, mObject.GetGame().GetTime(), utils::random::get<float>(0.f, 1.f))
+			: mAggro.Alert(sourceId);
+		if (!listed && mAggro.Contains(sourceId)) {
+			mObject.GetGame().GetLua().Trace(std::format("AGGRO object={} source={} threat={:.2f} reason=Alert{}",
+				mObject.GetId(), sourceId, mAggro.Get(sourceId), StimulusName(stimulus)));
+			RefreshAttackers(sourceId);
+		}
+		React(stimulus);
+	}
+
+	float AI::GetAggro(uint32_t sourceId) const {
+		return mAggro.Get(sourceId);
+	}
+
+	void AI::IgnoreFirstAggro() {
+		mAggro.IgnoreFirstAggro();
+		mStimuli.Clear(AIStimulus::AggroReactions);
+	}
+
+	void AI::OverrideFirstAggro(uint32_t abilityId) {
+		mFirstAggroOverride = abilityId;
+	}
+
+	void AI::SetAggroDelegate(uint32_t id) {
+		mAggroDelegate = id;
+	}
+
+	uint32_t AI::GetAggroDelegate() const {
+		return mAggroDelegate;
+	}
+
+	bool AI::IsStimulusActive(uint32_t mask) const {
+		return mStimuli.IsActive(mask);
+	}
+
+	bool AI::IsAttacking(uint32_t sourceId) const {
+		const bool alive = !mObject.HasCombatantData() || mObject.GetHealth() > 0;
+		return UsesBrain() && alive && !mDead && !mObject.IsMarkedForDeletion() && mAggro.Contains(sourceId);
+	}
+
+	void AI::OnDamaged(const Object& attacker, float damage) {
+		if (!UsesBrain() || damage <= 0 || &attacker == &mObject) {
+			return;
+		}
+
+		// A drone's or a trap's damage counts for whoever it names (SetAggroDelegate; the client
+		// copies that into the attacker's attribute snapshot, 0x9e3140).
+		uint32_t sourceId = attacker.GetId();
+		if (const auto* ai = attacker.GetAI(); ai && ai->GetAggroDelegate() != 0) {
+			sourceId = ai->GetAggroDelegate();
+		}
+
+		// An ally's splash starts no fight.
+		const auto source = mObject.GetObjectManager().Get(sourceId);
+		if (!source || source->GetTeam() == mObject.GetTeam()) {
+			return;
+		}
+		AddAggro(sourceId, damage, AggroFlags::Damage, "Damage");
 	}
 
 	void AI::TurnToward(const ObjectPtr& target) {
@@ -603,6 +779,396 @@ namespace Game {
 		// Before the script runs, as for players (Instance::UseAbility).
 		mObject.GetGame().ReportCastStarted(mObject.GetId(), *ability);
 		return ability->Tick(mObject.shared_from_this(), target, position, 1);
+	}
+
+	void AI::InitBrain() {
+		const auto& noun = mObject.GetNoun();
+		const auto& definition = noun ? noun->GetAIDefinition() : nullptr;
+		if (!definition) {
+			return;
+		}
+
+		mProfile = Profile(*definition);
+		mAggro = AggroList(definition->GetAggroType());
+		mSecondaryStart = RollSecondaryStart(mProfile.useSecondaryStart, utils::random::get<float>(0.f, 1.f));
+
+		// An agent that starts invisible is created hidden. nBehavior_Invisible only hides it at its
+		// first think, after the create has gone out, and the clients would see it until then. Only
+		// for one the brain will run (a pet's owner is not known yet, so a pet class is left out), and
+		// only if the scripts define the behavior, whose exit shows it again.
+		if (!RunsGambits(mObject) || !IsCreatureTree() || IdleFor(mProfile, mSecondaryStart, false) != invisibleBehavior) {
+			return;
+		}
+		if (const auto& data = noun->GetNonPlayerClassData(); data && data->IsPet()) {
+			return;
+		}
+		const sol::state_view state(mObject.GetGame().GetLua().GetState());
+		if (state[invisibleBehavior].get_type() != sol::type::table) {
+			return;
+		}
+		mObject.SetVisible(false);
+		mHiddenAtSpawn = true;
+	}
+
+	bool AI::IsCreatureTree() const {
+		// 0x9d6860 gives the creature tree to nounType 0x06c27d00: every NPC and every hero.
+		const auto& noun = mObject.GetNoun();
+		return noun && noun->GetType() == NounType::Creature;
+	}
+
+	BrainProfile AI::Profile(const AIDefinition& definition) const {
+		BrainProfile profile;
+		profile.preAggroIdle = definition.GetPreAggroIdle();
+		profile.secondaryPreAggroIdle = definition.GetSecondaryPreAggroIdle();
+		profile.combatIdle = definition.GetCombatIdle();
+		profile.passiveIdle = definition.GetPassiveIdle();
+		profile.firstAggroAbility = definition.GetFirstAggroAbility();
+		profile.secondaryFirstAggroAbility = definition.GetSecondaryFirstAggroAbility();
+		profile.firstAlertAbility = definition.GetFirstAlertAbility();
+		profile.subsequentAggroAbility = definition.GetSubsequentAggroAbility();
+		profile.useSecondaryStart = definition.GetUseSecondaryStart();
+		return profile;
+	}
+
+	void AI::Brain() {
+		// The invisible idle takes over at once from the hiding done at creation, before anything
+		// can reveal the agent: its exit is what shows it again.
+		if (mHiddenAtSpawn) {
+			mHiddenAtSpawn = false;
+			mBehavior.Run(invisibleBehavior);
+		}
+
+		auto& game = mObject.GetGame();
+		const auto now = game.GetTime();
+		if (mNextThink == 0) {
+			// A group spawned together does not all think on one update.
+			mNextThink = now + mObject.GetId() % thinkMilliseconds;
+		}
+		if (now < mNextThink) {
+			return;
+		}
+		const float elapsed = mLastThink != 0 ? static_cast<float>(now - mLastThink) / 1000.f : 0.f;
+		mLastThink = now;
+		mNextThink = now + thinkMilliseconds;
+
+		// Without a definition there is no brain (0xa22a50), and the tree's wander fails without one.
+		const auto& definition = mObject.GetNoun()->GetAIDefinition();
+		if (!definition) {
+			return;
+		}
+
+		mStimuli.Decay(elapsed);
+		ForgetLostTargets();
+		Perceive();
+
+		const auto target = GetBestTarget();
+		BrainState state;
+		state.castRunning = HasRunningAgentCast();
+		state.hasAggroed = mAggro.HasAggroed(now);
+		state.hasTarget = target != nullptr;
+		state.alwaysRun = definition->AlwaysRun();
+		state.hasIdle = !IdleFor(mProfile, mSecondaryStart, state.hasAggroed).empty();
+		state.creature = IsCreatureTree();
+
+		const bool inCombat = state.hasTarget && state.hasAggroed;
+		UpdateCombatState(inCombat ? target : nullptr, inCombat);
+
+		// A reaction with nothing to cast is spent, and the next child gets this think.
+		for (size_t pass = 0; pass <= AIStimuli::slotCount; ++pass) {
+			state.stimuli = mStimuli.Active();
+			switch (ChooseNode(state)) {
+				case BrainNode::Death:
+					return;
+
+				case BrainNode::HoldCast:
+					// The ability has the agent (node [2]): its idle ended when the cast began.
+					mBehavior.Exit();
+					return;
+
+				case BrainNode::FirstAggroCast:
+					mStimuli.Clear(AIStimulus::FirstAggro);
+					if (CastReaction(FirstAggroAbilityFor(mProfile, mSecondaryStart, std::exchange(mFirstAggroOverride, 0)), target)) {
+						return;
+					}
+					break;
+
+				case BrainNode::FirstAlertCast:
+					mStimuli.Clear(AIStimulus::FirstAlert);
+					if (CastReaction(FirstAlertAbilityFor(mProfile, std::exchange(mFirstAggroOverride, 0)), target)) {
+						return;
+					}
+					break;
+
+				case BrainNode::SubsequentAggroCast:
+					mStimuli.Clear(AIStimulus::SubsequentAggro);
+					if (CastReaction(mProfile.subsequentAggroAbility, target)) {
+						return;
+					}
+					break;
+
+				case BrainNode::Combat:
+					Fight(*definition, target, inCombat);
+					return;
+
+				case BrainNode::Idle:
+					mBehavior.Run(IdleFor(mProfile, mSecondaryStart, state.hasAggroed));
+					return;
+
+				case BrainNode::Wander:
+					mBehavior.Run(wanderBehavior);
+					return;
+
+				case BrainNode::Rest:
+				default:
+					mBehavior.Exit();
+					return;
+			}
+		}
+	}
+
+	void AI::Die() {
+		// A corpse is in no fight, and those it fought lose an attacker.
+		UpdateCombatState(nullptr, false);
+		for (const auto id : mAggro.GetIds()) {
+			RefreshAttackers(id);
+		}
+
+		// [1] HP 0 (0xa21160): nBehavior_Death, in the creature tree only. BehaviorRunner traces it
+		// once if no script defines it.
+		if (IsCreatureTree()) {
+			mBehavior.Run(deathBehavior);
+		}
+	}
+
+	void AI::ForgetLostTargets() {
+		const auto& manager = mObject.GetObjectManager();
+		const auto lost = mAggro.RemoveIf([&manager](uint32_t id) {
+			const auto object = manager.Get(id);
+			// A hero in the squad reserve is out of the world until it is deployed again.
+			return !object || object->IsMarkedForDeletion() || object->IsInSquadReserve() ||
+				(object->HasCombatantData() && object->GetHealth() <= 0);
+		});
+
+		for (const auto id : lost) {
+			// Coming back (revived, deployed again) inside its trigger aggroes it again.
+			std::erase(mInAggroRange, id);
+			RefreshAttackers(id);
+		}
+	}
+
+	void AI::Perceive() {
+		// Approximate: the server made a trigger volume per NPC that called Aggro_Trigger (0xa22620,
+		// 5 threat, flag 2) for each hostile entrant. No asset names it, so its size is INFERRED to be
+		// the aggro range, and an entrant counts when its edge comes inside (as InPerceptionCircle).
+		const auto& data = mObject.GetNoun()->GetNonPlayerClassData();
+		const float range = data ? data->GetAggroRange() : 0.f;
+		if (range <= 0) {
+			mInAggroRange.clear();
+			return;
+		}
+
+		const auto center = mObject.GetPosition();
+		const auto objects = mObject.GetObjectManager().GetObjectsInRadius(BoundingSphere(center, range + footprintSlack), { NounType::Creature });
+
+		std::vector<uint32_t> inside;
+		for (const auto& object : objects) {
+			if (object.get() == &mObject || !TouchesCircle(center, range, object->GetPosition(), object->GetFootprintRadius())) {
+				continue;
+			}
+
+			const AggroEntrant entrant {
+				.team = object->GetTeam(),
+				.combatant = object->HasCombatantData(),
+				.intangible = object->GetAttributeValue(AttributeType::Intangible) > 0,
+				.alive = !object->IsMarkedForDeletion() && object->GetHealth() > 0,
+				.heroSide = IsHero(*object) || IsHeroSummon(*object)
+			};
+			if (!IsAggroEntrant(mObject.GetTeam(), entrant)) {
+				continue;
+			}
+
+			// The trigger fires as it comes in, not while it stays.
+			const auto id = object->GetId();
+			inside.push_back(id);
+			if (std::find(mInAggroRange.begin(), mInAggroRange.end(), id) == mInAggroRange.end()) {
+				AddAggro(id, AggroList::alertThreat, AggroFlags::Perceived, "Trigger Volume");
+			}
+		}
+		mInAggroRange = std::move(inside);
+	}
+
+	void AI::AlertAllies(uint32_t sourceId) {
+		if (!UsesBrain()) {
+			return;
+		}
+
+		// INFERRED: the allies within the agent's alertRange, once (an alerted ally alerts no further).
+		const auto& data = mObject.GetNoun()->GetNonPlayerClassData();
+		const float range = data ? data->GetAlertRange() : 0.f;
+		if (range <= 0) {
+			return;
+		}
+
+		const auto center = mObject.GetPosition();
+		for (const auto& object : mObject.GetObjectManager().GetObjectsInRadius(BoundingSphere(center, range + footprintSlack), { NounType::Creature })) {
+			if (object.get() == &mObject || object->GetTeam() != mObject.GetTeam() || object->IsMarkedForDeletion() || object->GetHealth() <= 0) {
+				continue;
+			}
+			if (!TouchesCircle(center, range, object->GetPosition(), object->GetFootprintRadius())) {
+				continue;
+			}
+			// AlertObject itself leaves out an ally that does not aggro normally (aggroType 0).
+			if (auto* ai = object->GetAI(); ai && ai->UsesBrain()) {
+				ai->AlertObject(sourceId, true);
+			}
+		}
+	}
+
+	void AI::React(AggroStimulus stimulus) {
+		switch (stimulus) {
+			case AggroStimulus::FirstAggro:
+				mStimuli.Post(AIStimulus::FirstAggro, AggroList::stimulusSeconds);
+				break;
+
+			case AggroStimulus::FirstAlert:
+				mStimuli.Post(AIStimulus::FirstAlert, AggroList::stimulusSeconds);
+				break;
+
+			case AggroStimulus::SubsequentAggro:
+				// Approximate: as long as the others.
+				mStimuli.Post(AIStimulus::SubsequentAggro, AggroList::stimulusSeconds);
+				break;
+
+			default:
+				break;
+		}
+	}
+
+	void AI::UpdateCombatState(const ObjectPtr& target, bool inCombat) {
+		if (!mObject.HasAgentBlackboardData()) {
+			return;
+		}
+
+		const uint32_t id = target ? target->GetId() : 0;
+		if (mObject.GetTargetId() == id && mObject.IsInCombat() == inCombat) {
+			return;
+		}
+		mObject.SetTargetId(id);
+		mObject.SetInCombat(inCombat);
+
+		// Sent now, ahead of the turn, walk or cast this think makes: the clients take the target and
+		// the combat speed from it (0x509a90, 0x9e49d0), and Darkspin's captures put it first.
+		if (mObject.IsCreated()) {
+			mObject.GetGame().SendObjectUpdate(mObject.shared_from_this());
+		}
+	}
+
+	void AI::RefreshAttackers(uint32_t sourceId) const {
+		// INFERRED: the client records each agent that lists a source (0x9e4610, blackboard +0x43c),
+		// and mNumAttackers is only ever set by the server. It counts the live agents that fight it.
+		const auto& manager = mObject.GetObjectManager();
+		const auto source = manager.Get(sourceId);
+		if (!source || !source->HasAgentBlackboardData()) {
+			return;
+		}
+
+		uint32_t attackers = 0;
+		for (const auto& object : manager.GetActiveObjects()) {
+			if (const auto* ai = object->GetAI(); ai && ai->IsAttacking(sourceId)) {
+				++attackers;
+			}
+		}
+		if (source->GetNumAttackers() != attackers) {
+			source->SetNumAttackers(attackers);
+		}
+	}
+
+	bool AI::HasRunningAgentCast() const {
+		auto& lua = mObject.GetGame().GetLua();
+		const auto& running = lua.GetRunningCasts();
+		const auto now = utils::get_milliseconds();
+		for (const auto& entry : running.Of(mObject.GetId())) {
+			if (!running.IsRunning(entry) || now - entry.thread->started_ms() > longestHoldMilliseconds) {
+				continue;
+			}
+
+			const sol::table context = lua.GetCastContext(entry.thread);
+			if (!context.valid()) {
+				continue;
+			}
+			const sol::optional<sol::table> ability = context["ability"];
+			const auto script = ability ? lua.GetAbility(ability->get_or<uint32_t>("id", 0)) : nullptr;
+			if (script && script->RequiresAgent()) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool AI::CastReaction(uint32_t abilityId, const ObjectPtr& target) {
+		if (abilityId == 0 || mObject.HasCooldown(abilityId)) {
+			return false;
+		}
+		const auto& ability = mObject.GetGame().GetLua().GetAbility(abilityId);
+		if (!ability) {
+			return false;
+		}
+
+		// The cast takes the agent, so its idle ends first. That is how the client reveals a mob:
+		// the ability's start ticks its tree (0x9e11aa), and nBehavior_Invisible's exit shows it as
+		// the beam-in begins. The reaction turns the agent itself (FirstAggro_FaceTarget), or not
+		// (FirstAggro_ActivateRobot), so the AI does not.
+		mPursuedId = 0;
+		mBehavior.Exit();
+		Cast(ability, target, target ? target->GetPosition() : mObject.GetPosition());
+		return true;
+	}
+
+	void AI::Fight(const AIDefinition& definition, const ObjectPtr& target, bool inCombat) {
+		auto& game = mObject.GetGame();
+		const GambitRunner runner(mObject, game.GetLua(), [target] { return target; });
+
+		std::optional<GambitCast> cast;
+		if (const auto* phase = CurrentPhase(definition)) {
+			cast = runner.Choose(*phase, mGambit);
+		}
+
+		// Out of reach: walk up to the target, and cast once there.
+		if (cast && !cast->inReach) {
+			Pursue(*cast, runner.ReachDistance(*cast));
+			return;
+		}
+		mPursuedId = 0;
+		// Still on its way there: the server already holds it at the goal, the client not yet.
+		if (const auto& locomotion = mObject.GetLocomotionData(); locomotion && locomotion->GetWalkDistanceLeft() > 0) {
+			return;
+		}
+
+		if (!cast || !game.PayForCast(mObject.shared_from_this(), cast->ability->GetId(), 1, 0).allowed) {
+			// Between attacks, the combat idle (nodes [7]-[9]). A buffer that runs before it has a
+			// target (alwaysRunAI) idles as the idle node would have it. The short tree has neither.
+			if (!IsCreatureTree()) {
+				mBehavior.Exit();
+			} else if (inCombat) {
+				mBehavior.Run(CombatIdleFor(mProfile));
+			} else if (auto idle = IdleFor(mProfile, mSecondaryStart, mAggro.HasAggroed(game.GetTime())); !idle.empty()) {
+				mBehavior.Run(idle);
+			} else {
+				mBehavior.Run(wanderBehavior);
+			}
+			return;
+		}
+
+		// The ability takes over the agent's movement, so the idle is left first: its exit step
+		// stops the agent, which would undo the turn and the ability's own moves.
+		mBehavior.Exit();
+		if (definition.FaceTarget() && cast->target && cast->target.get() != &mObject) {
+			TurnToward(cast->target);
+		}
+		if (cast->target && cast->target.get() != &mObject) {
+			game.TraceReach(mObject.shared_from_this(), cast->target, cast->ability->GetId(), runner.Range(*cast));
+		}
+		Cast(cast->ability, cast->target, cast->position);
 	}
 
 	// Object
@@ -956,6 +1522,10 @@ namespace Game {
 	}
 
 	const AI* Object::GetAI() const {
+		return mAI.get();
+	}
+
+	AI* Object::GetAI() {
 		return mAI.get();
 	}
 
@@ -1608,6 +2178,12 @@ namespace Game {
 			// Only the hit that kills runs the death, not later ones on the corpse (a damage over time).
 			const bool wasAlive = GetHealth() > 0;
 			SetHealth(GetHealth() - damage);
+			// Threat for the attacker, before a killing blow's death: its allies still hear of it.
+			if (mAI && attackerAttributes) {
+				if (const auto attacker = attackerAttributes->GetOwnerObject()) {
+					mAI->OnDamaged(*attacker, damage);
+				}
+			}
 			if (wasAlive && GetHealth() <= 0) {
 				GetGame().OnObjectDeath(shared_from_this(), result.critical, false);
 			}
@@ -1940,6 +2516,16 @@ if (health <= 0) {
 	void Object::SetTargetable(bool targetable) {
 		if (HasAgentBlackboardData()) {
 			mAgentBlackboardData->SetTargetable(targetable);
+		}
+	}
+
+	uint32_t Object::GetNumAttackers() const {
+		return HasAgentBlackboardData() ? mAgentBlackboardData->GetNumAttackers() : 0;
+	}
+
+	void Object::SetNumAttackers(uint32_t attackers) {
+		if (HasAgentBlackboardData()) {
+			mAgentBlackboardData->SetNumAttackers(attackers);
 		}
 	}
 

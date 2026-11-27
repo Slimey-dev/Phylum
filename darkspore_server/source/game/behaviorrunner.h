@@ -16,10 +16,20 @@ namespace Game {
 	// that the server resumes every update for as long as it waits (0xa68eb0), and [3] runs when it
 	// is left (0xa68e10), where every pet behavior stops its agent. Each step runs on its own
 	// thread, which nBehaviorTree.GetMyObjectID reads its agent from.
+	// The three steps share one data table, as they share one context in the client: 0xa68f10
+	// clears the context's slots and points the agent's behavior thread at it (+0xe0) before [1]
+	// runs and [2] starts, and 0xa68e10 (0xa68e60 is its twin) runs [3] with the same context, read
+	// from the agent's behavior thread (+0x2a4) like the other two steps. nThreadData reads it there
+	// (dataOwner in scriptapi.cpp), so nBehavior_Invisible's [3] removes the Intangible its [1]
+	// added, and nBehavior_Wander's [2] walks to the point its [1] picked.
 	class BehaviorRunner {
 		public:
 			// The thread value GetMyObjectID reads.
 			static constexpr const char* agentKey = "behaviorAgent";
+			// The thread value nThreadData reads the running behavior's shared table from. The table is
+			// kept in the agent's private table under the same name (Lua::CreatePrivateTable), so it
+			// lives no longer than the agent and the Lua state.
+			static constexpr const char* dataKey = "behaviorData";
 
 			explicit BehaviorRunner(Object& agent);
 
@@ -36,6 +46,10 @@ namespace Game {
 
 		private:
 			bool Call(const std::string& name, int step, bool keep);
+
+			// A started behavior gets a new, empty table; it goes once its exit step has run.
+			void NewData();
+			void DropData();
 
 		private:
 			Object& mAgent;

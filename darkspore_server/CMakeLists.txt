@@ -151,22 +151,27 @@ add_executable(recap_tests
     tests/recentdamage_test.cpp
     tests/testenemyring_test.cpp
     tests/castpursuit_test.cpp
+    tests/gambitreach_test.cpp
+    tests/rangepoint_test.cpp
+    tests/hitdescriptors_test.cpp
     tests/attributemirror_test.cpp
     tests/facing_test.cpp
     tests/aiproperty_test.cpp
     tests/aitargeting_test.cpp
+    tests/aggrolist_test.cpp
+    tests/aibrain_test.cpp
     tests/runningcasts_test.cpp
     tests/projectilepasslist_test.cpp
     tests/walktimer_test.cpp
     tests/effectlist_test.cpp
     tests/director_test.cpp
     tests/directorspawner_test.cpp
+    tests/navmesh_test.cpp
     source/game/scriptsource.cpp
     source/game/scriptgaps.cpp
     source/game/projectilesweep.cpp
     source/game/lobarc.cpp
     source/game/attributestack.cpp
-    tests/navmesh_test.cpp
     source/game/modifiermanager.cpp
     source/game/abilityevent.cpp
     source/game/damageevents.cpp
@@ -184,11 +189,17 @@ add_executable(recap_tests
     source/game/recentdamage.cpp
     source/game/testenemyring.cpp
     source/game/castpursuit.cpp
+    source/game/gambitreach.cpp
+    source/game/rangepoint.cpp
+    source/game/hitdescriptors.cpp
     source/game/attributemirror.cpp
     source/game/facing.cpp
     source/game/aiproperty.cpp
     source/game/aitargeting.cpp
+    source/game/aggrolist.cpp
+    source/game/aibrain.cpp
     source/game/runningcasts.cpp
+    source/game/navmesh.cpp
     source/game/projectilepasslist.cpp
     source/game/walktimer.cpp
     source/game/effectlist.cpp
@@ -199,7 +210,6 @@ add_executable(recap_tests
     source/game/collision.cpp
     source/utils/functions.cpp)
 target_include_directories(recap_tests PRIVATE source ${doctest_SOURCE_DIR})
-    source/game/navmesh.cpp
 target_link_libraries(recap_tests PRIVATE lua pugixml)
 
 # Sol

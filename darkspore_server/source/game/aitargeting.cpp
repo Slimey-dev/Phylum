@@ -43,4 +43,18 @@ namespace Game {
 		const auto ids = OrderHostiles(from, team, radius, false, candidates, selfId);
 		return ids.empty() ? 0 : ids.front();
 	}
+
+	float PerceptionRadius(bool hasClass, float aggroRange, float alertRange) {
+		// Without an NPC class the client uses 20 (0x9e4040).
+		constexpr float withoutClass = 20.f;
+		return hasClass ? std::max(aggroRange, alertRange) : withoutClass;
+	}
+
+	bool TouchesCircle(const glm::vec3& center, float circle, const glm::vec3& point, float pointRadius) {
+		return circle > glm::distance(point, center) - pointRadius;
+	}
+
+	bool IsAggroEntrant(uint8_t team, const AggroEntrant& entrant) {
+		return entrant.heroSide && entrant.combatant && !entrant.intangible && entrant.alive && entrant.team != team;
+	}
 }

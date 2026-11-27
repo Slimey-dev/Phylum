@@ -10,6 +10,8 @@
 #include "serverevent.h"
 #include "scripttriggervolumes.h"
 #include "finitevector.h"
+#include "hitdescriptors.h"
+#include "rangepoint.h"
 
 #include "utils/casepath.h"
 #include "utils/functions.h"
@@ -61,6 +63,36 @@ namespace {
 			}
 		}
 		return result;
+	}
+
+	// What the client keeps on a combatant (+0x2cc) that the server's Object has no field for yet: the
+	// last hit's direction (+0x1c, GetHitDirection 0xa0b950) and descriptors (+0x28, GetHitDescriptors
+	// 0xa03ad0), whether its corpse is fading away (+0x34, IsCorpseFadingAway 0xa02b40,
+	// SetCorpseFadingAway 0xa02b10) and its death timer (+0x48, SetDeathTimer 0xa03740 -> 0x9d9030).
+	// They live in the object's private table, which goes with the object (ObjectManager).
+	constexpr const char* hitDirectionKey = "hitDirection";
+	constexpr const char* hitDescriptorsKey = "hitDescriptors";
+	constexpr const char* corpseFadingKey = "corpseFadingAway";
+	// The game time the death timer runs out, kept instead of the client's countdown; 0 is none.
+	constexpr const char* deathTimerKey = "deathTimerEndMs";
+
+	// A corpse that something claimed (ConsumeCorpse) or that is on its way out is not repaired, eaten
+	// or waited on any more. Approximate: the server removes bodies without a fade (Instance's corpse
+	// list, a critical kill at once), so one marked for deletion counts as fading too.
+	bool LuaIsCorpseFading(const Game::Lua& lua, const Game::Object& object) {
+		const sol::table data = lua.GetPrivateTable(object.GetId());
+		return (data.valid() && data.get_or(corpseFadingKey, false)) || (object.GetHealth() <= 0 && object.IsMarkedForDeletion());
+	}
+
+	// A time of 0 or less sets no timer, as a player's death waits for hit points alone.
+	void LuaSetDeathTimer(Game::Lua& lua, uint32_t id, uint64_t now, float seconds) {
+		lua.CreatePrivateTable(id)[deathTimerKey] = seconds > 0 ? now + static_cast<uint64_t>(seconds * 1000.f) : uint64_t { 0 };
+	}
+
+	bool LuaDeathTimerRanOut(const Game::Lua& lua, uint32_t id, uint64_t now) {
+		const sol::table data = lua.GetPrivateTable(id);
+		const uint64_t end = data.valid() ? data.get_or<uint64_t>(deathTimerKey, 0) : 0;
+		return end != 0 && now >= end;
 	}
 
 	auto LuaGetTrigger(const Game::ObjectManager& objectManager, sol::object& value) {
@@ -905,8 +937,126 @@ namespace LuaFunction {
 			game.SendAnimationState(object, 0);
 		}
 
+		// The death the killing hit calls for (0xa018d0, HitDescriptors::DeathAnimations). Only a
+		// combatant with character animations plays one.
 		auto SetAnimationStateToDeath(sol::this_state L, sol::object objectValue) {
-			// TODO: 
+			auto& game = LuaGetGame(L);
+			const auto object = LuaGetObject(game.GetObjectManager(), objectValue);
+			if (!object || !object->HasCombatantData() || !object->GetNoun()) {
+				return;
+			}
+
+			const auto& animations = object->GetNoun()->GetCharacterAnimation();
+			if (!animations) {
+				return;
+			}
+
+			const sol::table data = game.GetLua().GetPrivateTable(object->GetId());
+			const uint32_t hit = data.valid() ? data.get_or<uint32_t>(hitDescriptorsKey, 0) : 0;
+
+			uint32_t state = Game::HitDescriptors::fallbackDeathState;
+			for (const auto type : Game::HitDescriptors::DeathAnimations(hit)) {
+				if (const auto [death, _] = animations->GetAnimationData(type); death != 0) {
+					state = death;
+					break;
+				}
+			}
+			game.SendAnimationState(object, state);
+		}
+
+		// Plays the noun's animation of that type when it has one, and gives its duration (0 if none).
+		float PlayCharacterAnimation(sol::this_state L, sol::object& objectValue, Game::CharacterAnimationType type) {
+			auto& game = LuaGetGame(L);
+			const auto object = LuaGetObject(game.GetObjectManager(), objectValue);
+			const auto& noun = object ? object->GetNoun() : nullptr;
+			const auto& animations = noun ? noun->GetCharacterAnimation() : nullptr;
+			if (!animations) {
+				return 0.f;
+			}
+
+			const auto [state, duration] = animations->GetAnimationData(type);
+			if (state == 0) {
+				return 0.f;
+			}
+			game.SendAnimationState(object, state);
+			return duration;
+		}
+
+		// Repair bots shut down with it as their passive idle starts (nBehavior_IdleWithIntro): the
+		// enterPassiveIdle animation, and its duration, else 0 (0xa01cd0).
+		auto SetAnimationStateToEnterPassiveIdle(sol::this_state L, sol::object objectValue) {
+			return PlayCharacterAnimation(L, objectValue, Game::CharacterAnimationType::EnterPassiveIdle);
+		}
+
+		// The preAggro animation when the noun has one; it gives nothing back (0xa01e00).
+		auto SetAnimationStateToPreAggroIdle(sol::this_state L, sol::object objectValue) {
+			PlayCharacterAnimation(L, objectValue, Game::CharacterAnimationType::PreAggro);
+		}
+
+		// The last hit's nHitDescriptors, 0 before any (0xa03ad0). On a corpse that is its killing hit.
+		// Approximate: weapon hits with no script (Instance::WeaponAttack) are not counted.
+		auto GetHitDescriptors(sol::this_state L, sol::object objectValue) {
+			auto& game = LuaGetGame(L);
+			const auto object = LuaGetObject(game.GetObjectManager(), objectValue);
+			if (!object) {
+				return 0u;
+			}
+			const sol::table data = game.GetLua().GetPrivateTable(object->GetId());
+			return data.valid() ? data.get_or<uint32_t>(hitDescriptorsKey, 0) : 0u;
+		}
+
+		// The last hit's direction as three numbers, 0 before any (0xa0b950). Behavior_Death turns a
+		// corpse knocked back toward it.
+		auto GetHitDirection(sol::this_state L, sol::object objectValue) {
+			auto& game = LuaGetGame(L);
+			const auto object = LuaGetObject(game.GetObjectManager(), objectValue);
+			const sol::table data = object ? game.GetLua().GetPrivateTable(object->GetId()) : sol::table();
+			const sol::optional<glm::vec3> direction = data.valid() ? data.get<sol::optional<glm::vec3>>(hitDirectionKey) : sol::nullopt;
+			const auto value = direction.value_or(glm::vec3(0.f));
+			return std::make_tuple(value.x, value.y, value.z);
+		}
+
+		// (0xa02b40, LuaIsCorpseFading.)
+		auto IsCorpseFadingAway(sol::this_state L, sol::object objectValue) {
+			auto& game = LuaGetGame(L);
+			const auto object = LuaGetObject(game.GetObjectManager(), objectValue);
+			return object && LuaIsCorpseFading(game.GetLua(), *object);
+		}
+
+		// A repair keeps the corpse it works on (modifier_beingrepaired: 10 s): the death behavior's
+		// WaitForHitpointsAbove gives up when the timer runs out (0xa03740, 0x9ffb20).
+		auto SetDeathTimer(sol::this_state L, sol::object objectValue, float seconds) {
+			auto& game = LuaGetGame(L);
+			if (const auto object = LuaGetObject(game.GetObjectManager(), objectValue)) {
+				LuaSetDeathTimer(game.GetLua(), object->GetId(), game.GetTime(), seconds);
+			}
+		}
+
+		// Approximate: only the server's scripts hear it; the client's flag (CombatantData) is not sent.
+		auto SetCorpseFadingAway(sol::this_state L, sol::object objectValue) {
+			auto& game = LuaGetGame(L);
+			if (const auto object = LuaGetObject(game.GetObjectManager(), objectValue)) {
+				game.GetLua().CreatePrivateTable(object->GetId())[corpseFadingKey] = true;
+			}
+		}
+
+		// The NPC's rank, which its scripts scale by (GetRankedValueNPC; ShouldRepair's DontRepair). The
+		// client reads NonPlayerClass.npcRank, adds 1 while a certain ability runs and stops at 3; with no
+		// NPC class it is 1 (0xa02340, 0x9e4b50, 0xa17630). Approximate: NonPlayerClass does not hand out
+		// npcRank yet, so this is 1, the rank the AI casts at (GambitRunner) and every 1-1 enemy's.
+		auto GetNPCRank(sol::this_state, sol::object) {
+			return 1;
+		}
+
+		// A random point within range of the centre object (RangePoint), as three numbers.
+		auto GetPositionWithinRange(sol::this_state L, sol::object centerValue, float range, bool radial) {
+			auto& game = LuaGetGame(L);
+			const auto center = LuaGetObject(game.GetObjectManager(), centerValue);
+			if (!center) {
+				return glm::vec3(0.f);
+			}
+			return Game::RangePoint::Pick(center->GetPosition(), center->GetOrientation(), range, radial,
+				utils::random::get<float>(0.f, 1.f), utils::random::get<float>(0.f, 1.f));
 		}
 
 		auto SetAnimationStateToAggro(sol::this_state L, sol::object objectValue, sol::optional<bool> subsequent) {
@@ -1110,6 +1260,7 @@ namespace LuaFunction {
 				const auto range = Game::ScaleForAttacker(
 					attacker.get(), attributes, std::make_tuple(damageRange.raw_get_or(1, 0.f), damageRange.raw_get_or(2, 0.f)),
 					damageType, damageSource, damageCoefficient, descriptors);
+				const bool wasAlive = object->GetHealth() > 0;
 				const auto& result = object->TakeDamage(
 					attributes,
 					range,
@@ -1120,6 +1271,15 @@ namespace LuaFunction {
 					damageMultiplier.value_or(1.0f),
 					combatEvent.mDirection
 				);
+
+				// The victim keeps its last hit (GetHitDescriptors), so a corpse keeps the one that killed it:
+				// Zelem repair bots leave critically killed robots alone. Knockback is not known here; a
+				// knockback is a modifier of its own.
+				if (result.landed && wasAlive) {
+					auto data = game.GetLua().CreatePrivateTable(object->GetId());
+					data[hitDescriptorsKey] = Game::HitDescriptors::Of(result.critical, damageSource, damageType, descriptors, false);
+					data[hitDirectionKey] = combatEvent.mDirection;
+				}
 
 				combatEvent.mDeltaHealth = result.damage;
 				combatEvent.mIntegerHpChange = static_cast<int32_t>(combatEvent.mDeltaHealth);
@@ -1945,7 +2105,11 @@ namespace Game {
 			YieldThread(thread);
 		});
 
-		thread["WaitForHitpointsAbove"] = sol::yielding([this](sol::this_state L, sol::object objectValue, float value, float deathTimer) {
+		// WaitForHitpointsAbove(object, hitpoints, deathTimer) (0x9ffe60): until the object has more hit
+		// points than that, is gone, or its corpse fades away, or its death timer runs out (0x9ffb20).
+		// The wait sets that timer, and SetDeathTimer sets it again; 0 waits for hit points alone, as a
+		// player's death does. Behavior_Death gives a corpse 10 s this way before it fades.
+		thread["WaitForHitpointsAbove"] = sol::yielding([this](sol::this_state L, sol::object objectValue, float value, sol::optional<float> deathTimer) {
 			auto thread = GetThread(L);
 			if (!thread) {
 				return;
@@ -1954,15 +2118,12 @@ namespace Game {
 			auto& objectManager = mGame.GetObjectManager();
 			auto object = LuaGetObject(objectManager, objectValue);
 			if (object) {
-				thread->set_resume_condition([&objectManager, objectId = object->GetId(), value](lua_State* L, sol::variadic_results& results) {
+				LuaSetDeathTimer(*this, object->GetId(), mGame.GetTime(), deathTimer.value_or(0.f));
+				thread->set_resume_condition([this, &objectManager, objectId = object->GetId(), value](lua_State* L, sol::variadic_results& results) {
 					auto object = objectManager.Get(objectId);
-					if (!object) {
+					if (!object || LuaIsCorpseFading(*this, *object) || LuaDeathTimerRanOut(*this, objectId, mGame.GetTime())) {
 						return true;
 					}
-
-					// Check death timer thingy
-					//
-
 					return object->GetHealth() > value;
 				});
 			}
@@ -2499,6 +2660,8 @@ namespace Game {
 		object["ResetAnimationState"] = &LuaFunction::Object::ResetAnimationState;
 		object["SetAnimationStateToDeath"] = &LuaFunction::Object::SetAnimationStateToDeath;
 		object["SetAnimationStateToAggro"] = &LuaFunction::Object::SetAnimationStateToAggro;
+		object["SetAnimationStateToEnterPassiveIdle"] = &LuaFunction::Object::SetAnimationStateToEnterPassiveIdle;
+		object["SetAnimationStateToPreAggroIdle"] = &LuaFunction::Object::SetAnimationStateToPreAggroIdle;
 		object["SetGraphicsState"] = &LuaFunction::Object::SetGraphicsState;
 
 		object["GetAttributeSnapshot"] = &LuaFunction::Object::GetAttributeSnapshot;
@@ -2535,7 +2698,17 @@ namespace Game {
 		};
 
 		object["IsMarkedForDeletion"] = &Object::IsMarkedForDeletion;
+		// The client's name for it (0xa02930, obj+0x5d), as nGameObject.IsMarkedForDelete.
+		object["IsMarkedForDelete"] = &Object::IsMarkedForDeletion;
 		object["MarkForDeletion"] = &Object::MarkForDeletion;
+
+		object["GetHitDescriptors"] = &LuaFunction::Object::GetHitDescriptors;
+		object["GetHitDirection"] = &LuaFunction::Object::GetHitDirection;
+		object["IsCorpseFadingAway"] = &LuaFunction::Object::IsCorpseFadingAway;
+		object["SetCorpseFadingAway"] = &LuaFunction::Object::SetCorpseFadingAway;
+		object["SetDeathTimer"] = &LuaFunction::Object::SetDeathTimer;
+		object["GetNPCRank"] = &LuaFunction::Object::GetNPCRank;
+		object["GetPositionWithinRange"] = &LuaFunction::Object::GetPositionWithinRange;
 
 		object["IsCombatant"] = &LuaFunction::Object::IsCombatant;
 
@@ -2584,6 +2757,11 @@ namespace Game {
 		// Agent blackboard
 		object["GetTargetId"] = &Object::GetTargetId;
 		object["SetTargetId"] = &Object::SetTargetId;
+		// The client's names: SetTargetID sets the blackboard target (0xa023d0 -> 0x9e3dc0, +0x550),
+		// SetIsTargetable its targetable flag (0xa03350 -> 0x9e3b10, +0x578). The Invincitron's drone
+		// is made untargetable this way.
+		object["SetTargetID"] = &Object::SetTargetId;
+		object["SetIsTargetable"] = &Object::SetTargetable;
 
 		object["IsStealthed"] = &LuaFunction::Object::IsStealthed;
 		object["GetStealthType"] = &Object::GetStealthType;

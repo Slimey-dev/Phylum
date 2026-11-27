@@ -380,6 +380,11 @@ namespace {
 			if cast then
 				return cast
 			end
+			-- A behavior's three steps run on threads of their own and share one table (BehaviorRunner).
+			local behavior = BehaviorRunnerData()
+			if behavior then
+				return behavior
+			end
 			looseData[thread] = looseData[thread] or {}
 			return looseData[thread]
 		end
@@ -658,6 +663,16 @@ namespace {
 			return object and object:GetFootprintRadius() or 0
 		end
 
+		-- GetPositionWithinRangeOfObject(agent, centre, range, flag): a random x, y, z within range of the
+		-- centre (RangePoint), or nothing without both objects (0xa0dbe0). Wander and Stroll pass the agent twice.
+		function nGameObject.GetPositionWithinRangeOfObject(agentId, centerId, range, radial)
+			local center = get(centerId)
+			if not get(agentId) or not center then
+				return
+			end
+			return unpackVector(center:GetPositionWithinRange(tonumber(range) or 0, radial == true))
+		end
+
 		-- A deactivate step removes effects it may never have added (ZelemBossBlink); nil removes nothing.
 		function nGameObject.RemoveEffect(id, effect, hardStop)
 			local object = get(id)
@@ -715,13 +730,8 @@ namespace {
 		-- the server reads it yet, so it is left out until that use is known.
 		function nGameObject.AddDependency() end
 
-		-- Aggro (taunts, turrets drawing enemies, a pet's attacker passed to its owner) needs enemy AI
-		-- that picks targets by it, which is Stage 2. Until then nothing is passed on.
-		function nGameObject.AddAggroForObject() end
-		function nGameObject.SetAggroDelegate() end
-		function nGameObject.GetAggroDelegate()
-			return kObjIDNone
-		end
+		-- Aggro (AddAggroForObject, AlertObject, the delegates and stimuli) is bound to the AI in
+		-- RegisterGameScriptApi.
 
 		-- GetObjectAngleRad(id, otherId): the turn from the object's facing to the other object, about
 		-- the up axis, from 0 to 2 pi (client 0xa0da40). Nothing when either one is missing, as there.
@@ -897,7 +907,8 @@ namespace {
 			end
 			local direction = x and vec3.new(x, y, z) or nil
 			-- With no caster there is no attacker (a hazard), so the victim gets no DealtDamage event.
-			local attacker = nAbility.GetCaster()
+			-- false, not nil: the engine side cannot take nil for an object it may not get.
+			local attacker = nAbility.GetCaster() or false
 			return target:TakeDamage(attacker, snapshot or false, damage, damageType or 0, damageSource or 0, coefficient or 0, descriptors or 0, multiplier, direction)
 		end
 
@@ -1659,6 +1670,13 @@ namespace {
 			end
 		end
 
+		-- WaitForFadeOutInXSeconds(id, seconds): a wait while a corpse fades (Behavior_Death, after it adds
+		-- the fadeaway effect). The client counts the seconds down on game time, a negative one as 0, and
+		-- the fade is the client's own (0xa07bc0, 0x9ffe10).
+		function nThread.WaitForFadeOutInXSeconds(id, seconds)
+			nThread.WaitForXSeconds(math.max(tonumber(seconds) or 0, 0))
+		end
+
 		-- Until the object's jump or slide lands. The client plays it from ObjectJump (JumpArc).
 		function nThread.WaitForJumpComplete(id)
 			local object = get(id)
@@ -1850,6 +1868,61 @@ namespace Game {
 			}, property->value);
 		};
 
+		// Aggro, as the client's nGameObject functions (0xa02bb0-0xa030f0) hand it to the agent's AI.
+		// Ids may come as nil or an object; anything that is not a number is no object.
+		const auto idOf = [](sol::object value) -> uint32_t {
+			return value.is<uint32_t>() ? value.as<uint32_t>() : 0u;
+		};
+		const auto aiOf = [this, idOf](sol::object agentId) -> AI* {
+			const auto object = GetGame().GetObjectManager().Get(idOf(agentId));
+			return object ? object->GetAI() : nullptr;
+		};
+		sol::table gameObject = mState["nGameObject"];
+		gameObject["AddAggroForObject"] = [aiOf, idOf](sol::object agentId, sol::object sourceId, sol::optional<float> amount, sol::optional<std::string> reason) {
+			if (auto* ai = aiOf(agentId); ai && idOf(sourceId) != 0) {
+				ai->AddAggro(idOf(sourceId), amount.value_or(0.f), AggroFlags::Script, reason.value_or(""));
+			}
+		};
+		gameObject["GetAggroForObject"] = [aiOf, idOf](sol::object agentId, sol::object sourceId) -> float {
+			const auto* ai = aiOf(agentId);
+			return ai ? ai->GetAggro(idOf(sourceId)) : 0.f;
+		};
+		gameObject["AlertObject"] = [aiOf, idOf](sol::object agentId, sol::object sourceId) {
+			if (auto* ai = aiOf(agentId); ai && idOf(sourceId) != 0) {
+				ai->AlertObject(idOf(sourceId));
+			}
+		};
+		gameObject["IgnoreFirstAggro"] = [aiOf](sol::object agentId) {
+			if (auto* ai = aiOf(agentId)) {
+				ai->IgnoreFirstAggro();
+			}
+		};
+		// The ability comes as its id or its name.
+		gameObject["OverrideFirstAggro"] = [aiOf](sol::object agentId, sol::object ability) {
+			auto* ai = aiOf(agentId);
+			if (!ai) {
+				return;
+			}
+			if (ability.is<uint32_t>()) {
+				ai->OverrideFirstAggro(ability.as<uint32_t>());
+			} else if (ability.is<std::string>()) {
+				ai->OverrideFirstAggro(utils::hash_id(ability.as<std::string>()));
+			}
+		};
+		gameObject["SetAggroDelegate"] = [aiOf, idOf](sol::object agentId, sol::object delegateId) {
+			if (auto* ai = aiOf(agentId)) {
+				ai->SetAggroDelegate(idOf(delegateId));
+			}
+		};
+		gameObject["GetAggroDelegate"] = [aiOf](sol::object agentId) -> uint32_t {
+			const auto* ai = aiOf(agentId);
+			return ai ? ai->GetAggroDelegate() : 0u;
+		};
+		gameObject["IsStimulusActive"] = [aiOf](sol::object agentId, sol::optional<uint32_t> mask) {
+			const auto* ai = aiOf(agentId);
+			return ai && ai->IsStimulusActive(mask.value_or(0));
+		};
+
 		// The AI's aggro list (AI::GetAggroList). The client reads the agent's list (0x2b0 + 0x228);
 		// an object with no AI has none, so its best target is 0 (0xa00d80).
 		const auto aggroList = [this](uint32_t agentId) -> std::vector<uint32_t> {
@@ -1858,9 +1931,13 @@ namespace Game {
 			return ai ? ai->GetAggroList() : std::vector<uint32_t> {};
 		};
 		sol::table agent = mState.create_named_table("nAgent");
-		agent["GetBestTarget"] = [aggroList](uint32_t agentId) {
-			const auto ids = aggroList(agentId);
-			return ids.empty() ? 0u : ids.front();
+		// The first entry that may be fought (0x9e3e50): not stealthed, targetable, a combatant and
+		// not Intangible. The list's first id may be none of these.
+		agent["GetBestTarget"] = [this](uint32_t agentId) -> uint32_t {
+			const auto object = GetGame().GetObjectManager().Get(agentId);
+			const auto* ai = object ? object->GetAI() : nullptr;
+			const auto target = ai ? ai->GetBestTarget() : nullptr;
+			return target ? target->GetId() : 0u;
 		};
 		agent["HasTargetsOnAggroList"] = [aggroList](uint32_t agentId) {
 			return !aggroList(agentId).empty();
@@ -1883,6 +1960,15 @@ namespace Game {
 			}
 			const sol::object agent = thread->get_value(BehaviorRunner::agentKey);
 			return agent.get_type() == sol::type::number ? agent.as<uint32_t>() : 0;
+		};
+		// The table the steps of the behavior on this thread share, else nil (nThreadData's dataOwner).
+		mState["BehaviorRunnerData"] = [this](sol::this_state L) -> sol::object {
+			const auto* thread = GetThread(L);
+			if (!thread) {
+				return sol::make_object(L, sol::lua_nil);
+			}
+			const sol::object data = thread->get_value(BehaviorRunner::dataKey);
+			return data.get_type() == sol::type::table ? data : sol::make_object(L, sol::lua_nil);
 		};
 
 		sol::table simulator = mState.create_named_table("nGameSimulator");

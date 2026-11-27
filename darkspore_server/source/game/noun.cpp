@@ -586,6 +586,22 @@ namespace Game {
 		return mPassiveIdle;
 	}
 
+	const std::string& AIDefinition::GetPreAggroIdle() const {
+		return mPreAggroIdle;
+	}
+
+	const std::string& AIDefinition::GetSecondaryPreAggroIdle() const {
+		return mSecondaryPreAggroIdle;
+	}
+
+	float AIDefinition::GetUseSecondaryStart() const {
+		return mUseSecondaryStart;
+	}
+
+	uint32_t AIDefinition::GetAggroType() const {
+		return mAggroType;
+	}
+
 	uint32_t AIDefinition::GetPassiveAbility() const {
 		return mPassiveAbility;
 	}

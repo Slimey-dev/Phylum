@@ -3,6 +3,8 @@
 #define _GAME_OBJECT_HEADER
 
 // Include
+#include "aggrolist.h"
+#include "aibrain.h"
 #include "effectlist.h"
 #include "noun.h"
 #include "attributes.h"
@@ -15,6 +17,7 @@
 #include "serverevent.h"
 
 #include <map>
+#include <string_view>
 #include <tuple>
 
 // Predefined
@@ -222,8 +225,10 @@ namespace Game {
 	struct GambitCast;
 
 	// AI
-	// Runs an NPC's AI definition. Hero summons run their gambits (GambitRunner); other NPCs only do
-	// with AI_MOBS on (RunsGambits), and otherwise keep what they did before.
+	// Runs an NPC's AI definition. Hero summons run their gambits (GambitRunner) at the nearest
+	// hostile. Other NPCs only run theirs with AI_MOBS on (RunsGambits), and then think as the
+	// client's creature tree does (aibrain.h), fighting from a threat list (AggroList); with it off
+	// they keep what they did before. See docs/ai.md.
 	// Belongs to its object, so it holds it by reference (a shared pointer to its owner kept every
 	// NPC alive), and its target weakly, so a target that is gone is dropped.
 	class AI {
@@ -235,18 +240,51 @@ namespace Game {
 			// Before the object goes: its behavior's exit step still finds it.
 			void OnRemoved();
 
-			// nAgent's aggro list: the live hostile creatures within the NPC's aggro range, nearest
-			// first (OrderHostiles). The best target is the first of them.
+			// nAgent's aggro list (GetTargetsOnAggroList 0xa07f50). A mob's is its threat list, highest
+			// first; a summon's is the live hostile creatures within its aggro range, nearest first
+			// (OrderHostiles).
 			std::vector<uint32_t> GetAggroList() const;
+			// nAgent.GetBestTarget (0xa00d80): a mob's first entry that may be fought (0x9e3e50), a
+			// summon's first hostile.
 			ObjectPtr GetBestTarget() const;
 
-			// nAgent.InPerceptionCircle: whether a point, widened by a radius, touches the circle the
-			// agent perceives (0xa0aea0). The client builds that circle from the camera around the
-			// owner (0x9e4040); the server has no camera, so it is the aggro range around the owner,
-			// or around the agent when it has none. Pets leave a fight that strays outside it.
+			// nAgent.InPerceptionCircle (0xa0aea0): whether a point, widened by a radius, touches the
+			// circle the agent perceives (0x9e4040): max(aggroRange, alertRange), or 20 without an NPC
+			// class. It is centred on the agent, or on its owner for a pet. The client moves a pet's
+			// circle ahead of its owner by the camera's yaw; the server has no camera, so it is the
+			// owner. Pets leave a fight that strays outside it.
 			bool InPerceptionCircle(const glm::vec3& point, float radius) const;
 
+			// Threat, for the scripts' nGameObject functions and the server's own sources.
+			// AddAggro (0x9e4640): flags are AggroFlags (AddAggroForObject passes Script). A first
+			// aggro alerts the agent's allies.
+			void AddAggro(uint32_t sourceId, float amount, uint32_t flags, std::string_view reason);
+			// AlertObject (0x9e4870).
+			// late: as an ally an agent alerts on its first aggro, which reacts after a delay.
+			void AlertObject(uint32_t sourceId, bool late = false);
+			// GetAggroForObject (0xa02c20): 0 for a source that is not listed.
+			float GetAggro(uint32_t sourceId) const;
+			// IgnoreFirstAggro (0x9e3cc0).
+			void IgnoreFirstAggro();
+			// OverrideFirstAggro (0xa02cf0): the ability its first aggro or alert casts instead.
+			void OverrideFirstAggro(uint32_t abilityId);
+			// SetAggroDelegate (0xa02ee0): who the threat for this agent's damage goes to (a trap's or
+			// a drone's owner). 0 is the agent itself.
+			void SetAggroDelegate(uint32_t id);
+			uint32_t GetAggroDelegate() const;
+			// IsStimulusActive (0xa030f0), with AIStimulus masks.
+			bool IsStimulusActive(uint32_t mask) const;
+			// Whether this agent fights the source now, for the source's mNumAttackers.
+			bool IsAttacking(uint32_t sourceId) const;
+
+			// The agent's object lost health to the attacker (its snapshot's owner).
+			// Approximate, server-only: threat equal to the damage (see docs/ai.md).
+			void OnDamaged(const Object& attacker, float damage);
+
 		private:
+			// Whether the mob brain runs this agent: AI_MOBS is on and it is not a hero's summon.
+			bool UsesBrain() const;
+
 			// Picks and casts a gambit, a few times a second rather than on every update: a
 			// condition is a script, and a cast that fails before it pays its cooldown would
 			// otherwise go again on the next update.
@@ -269,22 +307,64 @@ namespace Game {
 			bool Cast(uint32_t abilityId, const ObjectPtr& target, const glm::vec3& position);
 			bool Cast(const AbilityPtr& ability, const ObjectPtr& target, const glm::vec3& position);
 
+			// The mob brain (aibrain.h): one think of the creature tree.
+			void Brain();
+			// Brain init (0xa22a50), at creation: the secondary-start roll, and hiding an agent that
+			// starts invisible before the clients first hear of it.
+			void InitBrain();
+			void Die();
+			// Entries whose object is gone, dead or out of the world are dropped.
+			void ForgetLostTargets();
+			// Its aggro trigger: a hero or summon that comes within aggroRange is listed.
+			void Perceive();
+			void AlertAllies(uint32_t sourceId);
+			void React(AggroStimulus stimulus);
+			// The blackboard the clients mirror (AgentBlackboardUpdate 0x99): target and inCombat.
+			void UpdateCombatState(const ObjectPtr& target, bool inCombat);
+			// The source's mNumAttackers: how many live agents fight it.
+			void RefreshAttackers(uint32_t sourceId) const;
+			// One of its abilities that needs the agent still runs (0x9dee30).
+			bool HasRunningAgentCast() const;
+			// Casts a reaction to an aggro stimulus; false when it has none to cast.
+			bool CastReaction(uint32_t abilityId, const ObjectPtr& target);
+			// Its gambits, or the idle that goes with what it is doing when none can go.
+			void Fight(const AIDefinition& definition, const ObjectPtr& target, bool inCombat);
+			BrainProfile Profile(const AIDefinition& definition) const;
+			// Whether it runs the creature tree, with its idles, rather than the short one.
+			bool IsCreatureTree() const;
+
 		private:
 			Object& mObject;
 			std::weak_ptr<Object> mTarget;
 			BehaviorRunner mBehavior;
 
+			// The brain's view of its AI definition, read once.
+			BrainProfile mProfile;
+			AggroList mAggro;
+			AIStimuli mStimuli;
+			// The hostiles its aggro trigger holds, listed as they came in.
+			std::vector<uint32_t> mInAggroRange;
+
 			uint64_t mNextThink = 0;
+			uint64_t mLastThink = 0;
 
 			// The target the last pursuit walked to, and where it stood then.
 			glm::vec3 mPursuedAt {};
 			uint32_t mPursuedId = 0;
+
+			// OverrideFirstAggro's ability, and SetAggroDelegate's object.
+			uint32_t mFirstAggroOverride = 0;
+			uint32_t mAggroDelegate = 0;
 
 			uint8_t mGambit = 0;
 
 			bool mFirstAggro = false;
 			// Its object died and the AI let go of its behavior; it stays still until resurrected.
 			bool mDead = false;
+			// Brain init rolled the secondary start (blackboard +0x588).
+			bool mSecondaryStart = false;
+			// Hidden at creation for its invisible pre-aggro idle, which has not started yet.
+			bool mHiddenAtSpawn = false;
 	};
 
 	// ObjectDataBits
@@ -391,6 +471,7 @@ namespace Game {
 
 			// The NPC's AI, or null for a player's creature.
 			const AI* GetAI() const;
+			AI* GetAI();
 
 			// Called just before the object is removed, while scripts can still reach it.
 			void OnRemoved();
@@ -536,6 +617,8 @@ namespace Game {
 			void SetDirty(bool dirty);
 
 			bool IsMarkedForDeletion() const;
+			// The clients have been sent its ObjectCreate.
+			bool IsCreated() const { return mFlags & Flags::Created; }
 			void MarkForDeletion();
 
 			// Combatant functions
@@ -594,6 +677,10 @@ namespace Game {
 
 			bool IsTargetable() const;
 			void SetTargetable(bool targetable);
+
+			// How many NPCs fight it (mNumAttackers): the client reads a hero's for its music (0x4e64d0).
+			uint32_t GetNumAttackers() const;
+			void SetNumAttackers(uint32_t attackers);
 
 			// Network & reflection
 			void WriteTo(RakNet::BitStream& stream) const;

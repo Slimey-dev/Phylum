@@ -450,6 +450,13 @@ namespace Game {
 			// The behaviors the agent idles with, in combat and out of it (nBehavior_FollowOwner).
 			const std::string& GetCombatIdle() const;
 			const std::string& GetPassiveIdle() const;
+			// The idle before the first aggro, and the one a useSecondaryStart roll picks instead
+			// (AIDefinition +0x7c, +0xcc; brain init 0xa22a50 rolls blackboard +0x588).
+			const std::string& GetPreAggroIdle() const;
+			const std::string& GetSecondaryPreAggroIdle() const;
+			float GetUseSecondaryStart() const;
+			// 0 aggroes, 2 never does (AIDefinition +0x78, read by 0x9e3b30).
+			uint32_t GetAggroType() const;
 
 			bool FaceTarget() const;
 			bool AlwaysRun() const;

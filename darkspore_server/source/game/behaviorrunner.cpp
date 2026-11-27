@@ -32,6 +32,8 @@ namespace Game {
 			mMissing = true;
 			return;
 		}
+
+		NewData();
 		if (Call(name, 1, false)) {
 			Call(name, 2, true);
 		}
@@ -48,6 +50,7 @@ namespace Game {
 		const auto name = std::move(mName);
 		mName.clear();
 		Call(name, 3, false);
+		DropData();
 	}
 
 	bool BehaviorRunner::Call(const std::string& name, int step, bool keep) {
@@ -67,6 +70,9 @@ namespace Game {
 
 		auto* thread = lua.SpawnThread();
 		thread->set_value(agentKey, sol::make_object(state, mAgent.GetId()));
+		// Read again for each step: a step that fails or ends leaves the table where it is.
+		const sol::table data = lua.GetPrivateTable(mAgent.GetId());
+		thread->set_value(dataKey, data.valid() ? sol::object(data[dataKey]) : sol::make_object(state, sol::lua_nil));
 
 		// Tracked before it runs: a step that ends at once goes back to the pool inside call.
 		const auto ticket = keep ? lua.TrackThread(thread) : 0;
@@ -75,5 +81,17 @@ namespace Game {
 			mTicket = ticket;
 		}
 		return ran;
+	}
+
+	void BehaviorRunner::NewData() {
+		auto& lua = mAgent.GetGame().GetLua();
+		lua.CreatePrivateTable(mAgent.GetId())[dataKey] = sol::state_view(lua.GetState()).create_table();
+	}
+
+	void BehaviorRunner::DropData() {
+		// The agent's private table goes with the agent (ObjectManager), after this exit step ran.
+		if (sol::table data = mAgent.GetGame().GetLua().GetPrivateTable(mAgent.GetId()); data.valid()) {
+			data[dataKey] = sol::lua_nil;
+		}
 	}
 }
