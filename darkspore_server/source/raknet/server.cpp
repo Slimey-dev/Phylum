@@ -161,12 +161,15 @@ namespace RakNet {
 			mSelf->AttachPlugin(&mLogger);
 #endif
 
+			// Set before Startup: RakNet answers requests as soon as its socket is open, and with
+			// the limit still at 0 it tells the client the server is full. The client does not
+			// retry after that and waits on the loading screen for good.
+			mSelf->SetMaximumIncomingConnections(4);
+
 			auto socketDescriptor = SocketDescriptor(port, nullptr);
 			if (!mSelf->Startup(4, 10, &socketDescriptor, 1)) {
 				return;
 			}
-
-			mSelf->SetMaximumIncomingConnections(4);
 			mSelf->SetOccasionalPing(true);
 			// mSelf->SetUnreliableTimeout(1000);
 			mSelf->SetUnreliableTimeout(0);
