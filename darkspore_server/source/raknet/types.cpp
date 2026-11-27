@@ -1168,8 +1168,14 @@ namespace RakNet {
 	}
 
 	void ChainVoteData::SetEnemyNoun(std::string_view nounStr, uint32_t index) {
+		// No name is no enemy. utils::hash_id("") is not 0, and the client preloads every slot's noun
+		// without checking that it exists.
+		SetEnemyNounId(nounStr.empty() ? 0 : utils::hash_id(nounStr), index);
+	}
+
+	void ChainVoteData::SetEnemyNounId(uint32_t noun, uint32_t index) {
 		if (index < mEnemyNouns.size()) {
-			mEnemyNouns[index] = utils::hash_id(nounStr);
+			mEnemyNouns[index] = noun;
 		}
 	}
 

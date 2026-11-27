@@ -779,6 +779,7 @@ namespace RakNet {
 
 			uint32_t GetEnemyNoun(uint32_t index) const;
 			void SetEnemyNoun(std::string_view nounStr, uint32_t index);
+			void SetEnemyNounId(uint32_t noun, uint32_t index);
 
 			void WriteTo(RakNet::BitStream& stream) const;
 
