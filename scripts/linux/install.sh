@@ -58,19 +58,25 @@ cp -r "$build/data" "$server/"
 # these rewrite them from the game's own AssetData_Binary.package. Both are safe to run again.
 scripts=$(realpath "$(dirname "$0")/..")
 game=$(dirname "$game_bin")
-if [ ! -d "$server/data/serverdata" ]; then
-	echo "No extracted game data yet. Once there is, run from $scripts:"
-	echo "  python3 -I phase_gambits.py --game \"$game\" && python3 -I serverdata_fix.py --game \"$game\""
+data="$server/data/serverdata"
+package="$game/Data/AssetData_Binary.package"
+# The server extracts the game data on its first start and writes version_bin.txt when it is done.
+# The folder itself always exists, since the build's data is copied in above.
+if [ ! -f "$data/version_bin.txt" ] || [ ! -d "$data/noun" ] || [ ! -d "$data/phase" ]; then
+	echo "The game data is not extracted yet. Start the server once, stop it, then run:"
+	echo "  python3 -I \"$scripts/phase_gambits.py\" --game \"$game\" --phases \"$data/phase\""
+	echo "  python3 -I \"$scripts/serverdata_fix.py\" --game \"$game\" --data \"$data\""
+	echo "or run this script again."
 elif ! command -v python3 >/dev/null; then
 	echo "python3 not found, so the game data was not repaired (see $scripts/serverdata_fix.py)." >&2
 else
 	log="$server/data_repair.log"
 	: > "$log"
-	for fix in phase_gambits.py serverdata_fix.py; do
-		echo "Repairing game data with $fix (details in $log)"
-		python3 -I "$scripts/$fix" --game "$game" >> "$log" ||
-			echo "$fix failed, see $log; that part of the data stays as it was exported." >&2
-	done
+	echo "Repairing game data (details in $log)"
+	python3 -I "$scripts/phase_gambits.py" --game "$game" --package "$package" --phases "$data/phase" >> "$log" 2>&1 ||
+		echo "phase_gambits.py failed, see $log; the AI's gambits stay as they were exported." >&2
+	python3 -I "$scripts/serverdata_fix.py" --game "$game" --package "$package" --data "$data" >> "$log" 2>&1 ||
+		echo "serverdata_fix.py failed, see $log; that part of the data stays as it was exported." >&2
 	grep -E '^[a-z][a-z ]*:' "$log" || true
 fi
 

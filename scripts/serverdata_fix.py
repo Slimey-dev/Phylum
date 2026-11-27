@@ -451,8 +451,13 @@ def read_text(path):
 
 
 def write_text(path, content):
-    with open(path, "wb") as handle:
+    # Whole or not at all: a run cut short must not leave a truncated file for the next one to choke on.
+    temporary = path + ".tmp"
+    with open(temporary, "wb") as handle:
         handle.write(content.encode("latin-1"))
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
 
 
 def children(content, root):
