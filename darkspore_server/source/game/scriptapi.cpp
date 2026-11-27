@@ -907,6 +907,11 @@ namespace {
 			if not target then
 				return 0, false
 			end
+			-- Only a heal its script lets resurrect reaches the dead: modifier_resurrect passes true. A
+			-- Zelem repair minion's heals brought killed minions back.
+			if target:GetHealth() <= 0 and canResurrect ~= true then
+				return 0, false
+			end
 			local range = type(amount) == "table" and amount or { amount or 0, amount or 0 }
 			local healer = nAbility.GetCaster() or target
 			return target:Heal(healer, snapshot, range, coefficient or 0, descriptors or 0, critical == true, canResurrect == true)

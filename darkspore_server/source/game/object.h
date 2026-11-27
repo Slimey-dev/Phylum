@@ -283,6 +283,8 @@ namespace Game {
 			uint8_t mGambit = 0;
 
 			bool mFirstAggro = false;
+			// Its object died and the AI let go of its behavior; it stays still until resurrected.
+			bool mDead = false;
 	};
 
 	// ObjectDataBits

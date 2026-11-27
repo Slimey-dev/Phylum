@@ -347,6 +347,10 @@ namespace Game {
 			bool mLevelLoaded = false;
 			bool mTeleportersCreated = false;
 
+			// Dead mobs and when their bodies go (OnObjectDeath). Approximate: the time is not known yet.
+			static constexpr uint64_t corpseMilliseconds = 10'000;
+			std::vector<std::pair<std::weak_ptr<Object>, uint64_t>> mCorpses;
+
 			// The AI director (docs/director.md): the level's enemy types by section, and its spawn points.
 			DefaultDirectorRandom mDirectorRandom;
 			DirectorPool mDirectorPool {};

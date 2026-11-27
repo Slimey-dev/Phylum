@@ -492,6 +492,7 @@ namespace {
 				CheckTeleportBreaksRoot();
 				CheckTeleportMovesAndIsSent(false);
 				CheckTeleportMovesAndIsSent(true);
+				CheckHealDoesNotRaiseTheDead();
 				CheckChannelEndsOnNewAction();
 				CheckLostModifierEndsWatcher(slow);
 				CheckSwapEndsFieldMedicBuff();
@@ -991,6 +992,35 @@ namespace {
 				agent->MarkForDeletion();
 			}
 
+			// A heal reaches the dead only when its script says it may resurrect (HealDamage's last
+			// argument, which modifier_resurrect passes): a Zelem repair minion's heals raised killed
+			// minions.
+			void CheckHealDoesNotRaiseTheDead() {
+				auto agent = Spawn();
+				if (!agent) {
+					Report("heal-does-not-raise-the-dead", false, "no agent");
+					return;
+				}
+
+				agent->Kill();
+				sol::protected_function heal = mState["nGameObject"]["HealDamage"];
+				std::string errors;
+				const auto called = [&errors](sol::protected_function_result result) {
+					if (!result.valid()) {
+						sol::error error = result;
+						errors += std::string(" error=") + error.what();
+					}
+				};
+				called(heal(false, agent->GetId(), 500.f, 0.f, 0, false));
+				const float afterHeal = agent->GetHealth();
+				called(heal(false, agent->GetId(), 500.f, 0.f, 0, false, true));
+				const float afterResurrect = agent->GetHealth();
+
+				Report("heal-does-not-raise-the-dead", afterHeal <= 0.f && afterResurrect > 0.f && errors.empty(),
+					std::format("afterHeal={} afterResurrect={}{}", afterHeal, afterResurrect, errors));
+				agent->MarkForDeletion();
+			}
+
 			// A channel that ends on StartedNewAction, as Sleeping Cloud's does, survives its own start,
 			// ends when its agent casts again (an ability that needs its agent) and when it is given
 			// somewhere to go (MoveToObject, 0xa149c0).
@@ -1222,10 +1252,13 @@ namespace {
 					return;
 				}
 
+				// Bodies left by earlier checks do not count: a mob's body goes after a while, which would
+				// look like the bubble taking something with it.
 				const auto others = [this, &agent] {
 					size_t count = 0;
 					for (const auto& object : mGame.GetObjectManager().GetObjectsInRadius(Game::BoundingSphere(agent->GetPosition(), 30.f), {})) {
-						count += object != agent && !object->IsMarkedForDeletion();
+						const bool dead = object->HasCombatantData() && object->GetHealth() <= 0;
+						count += object != agent && !object->IsMarkedForDeletion() && !dead;
 					}
 					return count;
 				};

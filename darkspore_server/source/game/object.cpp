@@ -347,6 +347,18 @@ namespace Game {
 	}
 
 	void AI::OnTick() {
+		// A corpse thinks no more: with AI_MOBS on, dead mobs kept choosing gambits, walking after
+		// the heroes and casting. Its behavior is left once, which stops it where it fell.
+		if (mObject.HasCombatantData() && mObject.GetHealth() <= 0) {
+			if (!mDead) {
+				mDead = true;
+				mPursuedId = 0;
+				mBehavior.Exit();
+			}
+			return;
+		}
+		mDead = false;
+
 		if (RunsGambits(mObject)) {
 			Think();
 		} else {

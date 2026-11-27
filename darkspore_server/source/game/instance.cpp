@@ -364,6 +364,18 @@ namespace Game {
 
 		mModifiers->OnAgentDeath(object->GetId());
 
+		// The dead walk no more. Its running casts are left to end on their own: ending them here ran
+		// their Deactivate steps, which undid the stats a resurrect then needed.
+		if (const auto& locomotion = object->GetLocomotionData(); locomotion && !object->IsPlayerControlled()) {
+			locomotion->Stop();
+			MoveObject(object, *locomotion);
+		}
+
+		// A mob's body goes after a while. Approximate: the time is not known yet.
+		if (!object->IsPlayerControlled() && object->GetNoun() && object->GetNoun()->IsCreature()) {
+			mCorpses.push_back({ object, utils::get_milliseconds() + corpseMilliseconds });
+		}
+
 		SendObjectGfxState(object, utils::hash_id("dead"));
 
 		const auto& noun = object->GetNoun();
@@ -581,6 +593,19 @@ namespace Game {
 				mDirectorTime = newGameTime;
 				UpdateDirector();
 			}
+
+			// Bodies whose time is up go, unless something brought them back.
+			std::erase_if(mCorpses, [newGameTime](const auto& corpse) {
+				const auto object = corpse.first.lock();
+				if (!object || object->IsMarkedForDeletion() || object->GetHealth() > 0) {
+					return true;
+				}
+				if (newGameTime < corpse.second) {
+					return false;
+				}
+				object->MarkForDeletion();
+				return true;
+			});
 
 			for (const auto& [_, player] : mPlayers) {
 				SendLabsPlayerUpdate(player);
