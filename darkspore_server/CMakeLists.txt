@@ -166,6 +166,7 @@ add_executable(recap_tests
     source/game/projectilesweep.cpp
     source/game/lobarc.cpp
     source/game/attributestack.cpp
+    tests/navmesh_test.cpp
     source/game/modifiermanager.cpp
     source/game/abilityevent.cpp
     source/game/damageevents.cpp
@@ -198,6 +199,7 @@ add_executable(recap_tests
     source/game/collision.cpp
     source/utils/functions.cpp)
 target_include_directories(recap_tests PRIVATE source ${doctest_SOURCE_DIR})
+    source/game/navmesh.cpp
 target_link_libraries(recap_tests PRIVATE lua pugixml)
 
 # Sol

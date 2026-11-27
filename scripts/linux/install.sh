@@ -55,7 +55,8 @@ cp -r "$build/data" "$server/"
 [ -d "$build/storage/www" ] && cp -r "$build/storage/www" "$server/storage/"
 
 # recap_parser's export misses the AI's gambits and breaks some nouns, classes and levels;
-# these rewrite them from the game's own AssetData_Binary.package. Both are safe to run again.
+# these rewrite them from the game's own AssetData_Binary.package. navmesh_extract.py adds the
+# levels' navmeshes from Levels.package. All are safe to run again.
 scripts=$(realpath "$(dirname "$0")/..")
 game=$(dirname "$game_bin")
 data="$server/data/serverdata"
@@ -66,6 +67,7 @@ if [ ! -f "$data/version_bin.txt" ] || [ ! -d "$data/noun" ] || [ ! -d "$data/ph
 	echo "The game data is not extracted yet. Start the server once, stop it, then run:"
 	echo "  python3 -I \"$scripts/phase_gambits.py\" --game \"$game\" --phases \"$data/phase\""
 	echo "  python3 -I \"$scripts/serverdata_fix.py\" --game \"$game\" --data \"$data\""
+	echo "  python3 -I \"$scripts/navmesh_extract.py\" --game \"$game\" --data \"$data\""
 	echo "or run this script again."
 elif ! command -v python3 >/dev/null; then
 	echo "python3 not found, so the game data was not repaired (see $scripts/serverdata_fix.py)." >&2
@@ -77,6 +79,9 @@ else
 		echo "phase_gambits.py failed, see $log; the AI's gambits stay as they were exported." >&2
 	python3 -I "$scripts/serverdata_fix.py" --game "$game" --package "$package" --data "$data" >> "$log" 2>&1 ||
 		echo "serverdata_fix.py failed, see $log; that part of the data stays as it was exported." >&2
+	# The levels' navmeshes (Levels.package) and the layer radii, for the server's paths; written to data/serverdata/navmesh.
+	python3 -I "$scripts/navmesh_extract.py" --game "$game" --package "$package" --data "$data" >> "$log" 2>&1 ||
+		echo "navmesh_extract.py failed, see $log; the server has no navmesh and walks in straight lines." >&2
 	grep -E '^[a-z][a-z ]*:' "$log" || true
 fi
 
