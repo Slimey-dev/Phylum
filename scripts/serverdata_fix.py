@@ -1,6 +1,6 @@
-"""Repair the nouns, non-player classes and level markerset lists that recap_parser exports wrongly.
+"""Repair the nouns, non-player classes, level markerset lists and AI definitions that recap_parser exports wrongly.
 
-The installer's recap_parser gets three asset types wrong. This reads the binary assets in
+The installer's recap_parser gets four asset types wrong. This reads the binary assets in
 AssetData_Binary.package and rewrites what is wrong in data/serverdata:
 
   noun/            A noun whose eliteAssetIds array is not empty loses every field after it. With
@@ -17,6 +17,14 @@ AssetData_Binary.package and rewrites what is wrong in data/serverdata:
                    loads each set whose group is 'none' and one set per other group, picked by weight
                    (Darkspore.exe 0x9D6340). The level asset only lists the sets; group and weight
                    come from each Markerset asset.
+  aidefinition/    aggroType holds the dword 4 bytes before it, passiveAbility's string pointer: a
+                   large number wherever the definition has a passive, else 0. The real value is 0,
+                   or 2 for the destructibles, obelisks, FireWallSegment, PipeBomb and
+                   Zelems_Slow_Aura (never aggroes: AddAggro 0x9E4640 returns at once). It is set
+                   from the binary in every definition. In the two whose nodes have outputs
+                   (VerdanthBoss, VerdanthBossTest) recap_parser also writes each output list's
+                   pointer and reads every name after the first list out of step; there the nodes
+                   and the ability names are written from the binary too.
 
 Binary layout (Darkspore.exe 5.3.0.103, from the client's reflection tables: Noun field descriptors
 0x116B4B0-0x116CBF0, NonPlayerClass 0x1166280-0x1166940, stride 0x60, in registration order):
@@ -42,14 +50,24 @@ Binary layout (Darkspore.exe 5.3.0.103, from the client's reflection tables: Nou
     asset, before the conditions. It can follow other data with no NUL between, so it is found by
     its hash.
   Level 0x98 bytes: markersets +0 (count +4), each a 4-byte Markerset asset pointer.
+  AIDefinition 0x280 bytes (descriptors 0xF8BCA0-0xF8CEE0): cAINode +0 (count +4). Keys
+    deathAbility +0x08, deathCondition +0x18, firstAggroAbility +0x28, firstAggroAbility2 +0x38,
+    firstAlertAbility +0x48, subsequentAggroAbility +0x58, passiveAbility +0x68; aggroType +0x78
+    (read by 0x9E3B30); char[0x50] preAggroIdle +0x7C, preAggroIdle2 +0xCC, combatIdle +0x11C,
+    passiveIdle +0x170, combatIdle2 +0x1C0, targetTooFar +0x224; combatIdleCooldown +0x16C,
+    combatIdle2Condition Key +0x210, combatIdle2Cooldown +0x220, targetTooFarCooldown +0x274,
+    faceTarget +0x278, alwaysRunAI +0x279, randomizeCooldowns +0x27A, useSecondaryStart float +0x27C.
+  cAINode 0x1C bytes (0xF8CEE0-0xF8D320): mpPhaseData +0 and mpConditionData +4 (asset pointers),
+    nodeX +0xC, nodeY +0x10, output +0x14 (count +0x18, int32 node indices). That a node's phase
+    name comes before its condition name is approximate: no node has both.
 
 Each decoder is checked before anything is written. Every field it decodes is compared with
-recap_parser's export of all nouns without eliteAssetIds, all classes and all markersets, and a
-section is left alone if one differs. Where recap_parser is known to misread a field (NOUN_MISREADS,
-NPC_MISREADS), a file holding exactly what recap_parser makes of the binary is counted apart. The
-nouns' hasCameraComponent is one: recap_parser writes whether aiDefinition is set, the client's flag
-(+0xD9) is false in every noun, and the rewritten nouns get the client's value. The server does not
-read it. Running the script again changes nothing.
+recap_parser's export of all nouns without eliteAssetIds, all classes, all markersets and all AI
+definitions, and a section is left alone if one differs. Where recap_parser is known to misread a
+field (NOUN_MISREADS, NPC_MISREADS, AIDEFINITION_MISREADS), a file holding exactly what recap_parser
+makes of the binary is counted apart. The nouns' hasCameraComponent is one: recap_parser writes
+whether aiDefinition is set, the client's flag (+0xD9) is false in every noun, and the rewritten
+nouns get the client's value. The server does not read it. Running the script again changes nothing.
 
   python3 -I scripts/serverdata_fix.py --game "<Darkspore folder>" [--package P] [--data DIR] [--dry-run]
 """
@@ -64,12 +82,13 @@ from xml.sax.saxutils import escape
 
 # python -I leaves this folder off sys.path; the DBPF and RefPack code is shared with phase_gambits.py.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from phase_gambits import DEFAULT_GAME, Cursor, fnv, refpack  # noqa: E402
+from phase_gambits import DEFAULT_GAME, Cursor, fixed, fnv, refpack  # noqa: E402
 
 NOUN_TYPE = 0x76A8F7D8
 NONPLAYERCLASS_TYPE = 0xD117AFCA
 MARKERSET_TYPE = 0xA11D3144
 LEVEL_TYPE = 0xB9193960
+AIDEFINITION_TYPE = 0xEEEB0E31
 
 # Pointer fields per struct, in the order their data follows in the asset:
 # (name, kind, offset[, struct or element size]). Kinds: "string" (Key, asset or char*),
@@ -150,6 +169,13 @@ LAYOUT = {
         ("eliteAffix", "array", 0x70, "cEliteAffix")]),
     "cLongDescription": (0x14, [("description.text", "string", 0), ("description.id", "string", 4)]),
     "cEliteAffix": (0xC, [("mpNPCAffix", "string", 0)]),
+    "AIDefinition": (0x280, [
+        ("cAINode", "array", 0, "cAINode"),
+        ("deathAbility", "string", 0x14), ("deathCondition", "string", 0x24),
+        ("firstAggroAbility", "string", 0x34), ("firstAggroAbility2", "string", 0x44),
+        ("firstAlertAbility", "string", 0x54), ("subsequentAggroAbility", "string", 0x64),
+        ("passiveAbility", "string", 0x74), ("combatIdle2Condition", "string", 0x21C)]),
+    "cAINode": (0x1C, [("mpPhaseData", "string", 0), ("mpConditionData", "string", 4), ("output", "array", 0x14, 4)]),
 }
 
 
@@ -260,7 +286,7 @@ THUMBNAIL = [
 
 def fields(payload, found, base, spec):
     """Elements for (tag, kind, offset) fields of the struct at base; a string field whose pointer
-    is not set is left out."""
+    is not set, and an empty "chars" field (a char[0x50] held in the struct), are left out."""
     out = []
     for tag, kind, offset in spec:
         at = base + offset
@@ -272,6 +298,9 @@ def fields(payload, found, base, spec):
             out.append((tag, flag(payload, at)))
         elif kind == "uint":
             out.append((tag, str(u32(payload, at))))
+        elif kind == "chars":
+            if fixed(payload, at, 0x50):
+                out.append((tag, escape(fixed(payload, at, 0x50))))
         elif text(found, at) is not None:
             out.append((tag, escape(text(found, at))))
     return out
@@ -425,6 +454,34 @@ class Check:
         order = [tag for tag, _ in values if tag in by_tag]
         if [node.tag for node in nodes if node.tag in decoded] != order:
             self.miss("(order)", file, [node.tag for node in nodes][:8], order[:8])
+
+    def blocks(self, file, parts, values, recap=None):
+        """As elements(), for the (tag, text) parts children() splits a file into: each part must be
+        the text xml_text writes for its value. For files ElementTree cannot read, such as those
+        where recap_parser writes a control character as &#02;."""
+        recap = {field: value for field, value in (recap or {}).items() if field in self.misreads}
+        by_tag = {}
+        for tag, block in parts:
+            by_tag.setdefault(tag, block)
+        for tag, value in values:
+            self.compared[tag] += 1
+            block = by_tag.get(tag)
+            if block is not None and block == xml_text([(tag, value)], 1):
+                continue
+            if tag in recap:
+                misread = recap[tag]
+                if block is None if misread is MISSING else block == xml_text([(tag, misread)], 1):
+                    self.recap[tag] += 1
+                    continue
+            self.miss(tag, file, "missing" if block is None else block.strip().replace("\n", "")[:120], value)
+        decoded = {tag for tag, _ in values}
+        for tag, _ in parts:
+            if tag not in decoded:
+                self.miss(tag, file, "present", "absent")
+        self.compared["(order)"] += 1
+        order = [tag for tag, _ in values if tag in by_tag]
+        if [tag for tag, _ in parts if tag in decoded] != order:
+            self.miss("(order)", file, [tag for tag, _ in parts][:8], order[:8])
 
     def report(self):
         print(f"{self.title}:")
@@ -766,6 +823,158 @@ def fix_levels(data, markersets, levels, dry_run):
     return not missing
 
 
+# The definition's fields after cAINode, in recap_parser's order. targetTooFarCooldown (+0x274) is
+# not among them: recap_parser leaves it out, and fix_aidefinitions checks that it is 0, which is
+# what the server reads when it is missing.
+AIDEFINITION_FIELDS = [
+    ("deathAbility", "string", 0x14), ("deathCondition", "string", 0x24),
+    ("firstAggroAbility", "string", 0x34), ("firstAggroAbility2", "string", 0x44),
+    ("firstAlertAbility", "string", 0x54), ("subsequentAggroAbility", "string", 0x64),
+    ("passiveAbility", "string", 0x74), ("aggroType", "uint", 0x78),
+    ("combatIdle", "chars", 0x11C), ("combatIdleCooldown", "uint", 0x16C),
+    ("combatIdle2", "chars", 0x1C0), ("combatIdle2Condition", "string", 0x21C),
+    ("combatIdle2Cooldown", "uint", 0x220), ("passiveIdle", "chars", 0x170),
+    ("preAggroIdle", "chars", 0x7C), ("preAggroIdle2", "chars", 0xCC),
+    ("useSecondaryStart", "number", 0x27C), ("targetTooFar", "chars", 0x224),
+    ("faceTarget", "flag", 0x278), ("alwaysRunAI", "flag", 0x279), ("randomizeCooldowns", "flag", 0x27A)]
+
+# The Key fields (name hash +0, string pointer +12): their strings are the ones recap_parser reads
+# out of step in a definition with node outputs.
+AIDEFINITION_KEYS = [(tag, offset) for tag, kind, offset in AIDEFINITION_FIELDS if kind == "string"]
+
+
+def aidefinition_elements(payload, found):
+    """The definition's XML in recap_parser's order, every field as the binary has it."""
+    out = []
+    start, count = found.get(0, (0, 0))
+    if count:
+        nodes = []
+        for index in range(count):
+            base = start + 0x1C * index
+            node = fields(payload, found, base, [("mpPhaseData", "string", 0), ("mpConditionData", "string", 4)])
+            node.append(("nodeX", str(struct.unpack_from("<i", payload, base + 0xC)[0])))
+            node.append(("nodeY", str(struct.unpack_from("<i", payload, base + 0x10)[0])))
+            first, outputs = found.get(base + 0x14, (0, 0))
+            node.append(("output", [("entry", str(struct.unpack_from("<i", payload, first + 4 * slot)[0]))
+                for slot in range(outputs)] or None))
+            nodes.append(("entry", node))
+        out.append(("cAINode", nodes))
+    return out + fields(payload, found, 0, AIDEFINITION_FIELDS)
+
+
+def recap_escape(value):
+    # recap_parser writes a control character as a two-digit decimal reference, &#02;.
+    return re.sub(r"[\x00-\x1F]", lambda match: f"&#{ord(match.group()):02d};", escape(value))
+
+
+def aidefinition_recap(payload, found):
+    """What recap_parser writes for the fields in AIDEFINITION_MISREADS. It reads aggroType 4 bytes
+    early, writes each node's output array pointer as <output>, and reads the strings one after
+    another from the end of the node array, as if no output array came between them."""
+    recap = {"aggroType": str(u32(payload, 0x74))}
+    start, count = found.get(0, (0, 0))
+    cursor = Cursor(payload)
+    cursor.reserve(1, LAYOUT["AIDefinition"][0])
+    cursor.reserve(count, LAYOUT["cAINode"][0])
+    nodes = []
+    for index in range(count):
+        base = start + 0x1C * index
+        node = []
+        for tag, offset in (("mpPhaseData", 0), ("mpConditionData", 4)):
+            value = cursor.reference(base + offset)
+            if value is not None:
+                node.append((tag, recap_escape(value)))
+        node.append(("nodeX", str(struct.unpack_from("<i", payload, base + 0xC)[0])))
+        node.append(("nodeY", str(struct.unpack_from("<i", payload, base + 0x10)[0])))
+        node.append(("output", str(u32(payload, base + 0x14))))
+        nodes.append(("entry", node))
+    if nodes:
+        recap["cAINode"] = nodes
+    for tag, offset in AIDEFINITION_KEYS:
+        value = cursor.reference(offset)
+        recap[tag] = MISSING if value is None else recap_escape(value)
+    return recap
+
+
+OUT_OF_STEP = "each name read where the one before it ended, which is wrong after a node's output array"
+AIDEFINITION_MISREADS = {
+    "aggroType": "the dword at +0x74, passiveAbility's string pointer; aggroType is at +0x78",
+    "cAINode": "<output> is the output array's pointer at +0x14, not its entries; " + OUT_OF_STEP,
+    **{tag: OUT_OF_STEP for tag, _ in AIDEFINITION_KEYS},
+}
+
+
+def fix_aidefinitions(folder, assets, dry_run):
+    check = Check("AIDefinition: decoded fields against recap_parser's export", AIDEFINITION_MISREADS)
+    plans = []
+    missing = 0
+    for file in sorted(os.listdir(folder)):
+        if not file.endswith(".AIDefinition.xml"):
+            continue
+        instance = instance_of(file, ".AIDefinition.xml")
+        payload = assets.get(instance)
+        if payload is None:
+            missing += 1
+            continue
+        path = os.path.join(folder, file)
+        content = read_text(path)
+        split = children(content, "aidefinition")
+        if split is None:
+            print(f"aidefinition/{file}: cannot rewrite (unexpected layout)", file=sys.stderr)
+            return False
+        found = walk(payload, "AIDefinition")
+        values = aidefinition_elements(payload, found)
+        nodes = [dict(node) for _, node in dict(values).get("cAINode", [])]
+        # Where recap_parser's names are out of step these are the only checks the rewritten names
+        # get: a Key holds the hash of its name, and a node names a .Phase or a .Condition asset.
+        for tag, offset in AIDEFINITION_KEYS:
+            if offset in found:
+                check.compared["(key hash)"] += 1
+                if fnv(found[offset]) != u32(payload, offset - 12):
+                    check.miss("(key hash)", file, f"{tag} {found[offset]!r}", f"0x{u32(payload, offset - 12):08X}")
+        for node in nodes:
+            for tag, suffix in (("mpPhaseData", ".Phase"), ("mpConditionData", ".Condition")):
+                if tag in node:
+                    check.compared["(node names)"] += 1
+                    if not node[tag].endswith(suffix):
+                        check.miss("(node names)", file, node[tag], f"a name ending in {suffix}")
+        check.compared["targetTooFarCooldown"] += 1
+        if u32(payload, 0x274):
+            check.miss("targetTooFarCooldown", file, "missing", str(u32(payload, 0x274)))
+        check.blocks(file, split[1], values, aidefinition_recap(payload, found))
+        # aggroType is written everywhere. A node's output array is what recap_parser gets wrong
+        # in the rest: it loses the entries and puts the names after it out of step, so where a
+        # node has outputs the nodes and names are written too. Elsewhere <output>0</output> is
+        # kept; the server reads it as no outputs, as the binary has it.
+        written = {"aggroType"}
+        if any(node["output"] is not None for node in nodes):
+            written |= {"cAINode"} | {tag for tag, _ in AIDEFINITION_KEYS}
+        plans.append((path, content, split, values, written))
+    if check.report():
+        print("aidefinition: the decoder disagrees with the export, so nothing was written", file=sys.stderr)
+        return False
+
+    changed = []
+    for path, content, (head, parts, foot), values, written in plans:
+        # The check above found every element of the file among the decoded ones, so rebuilding
+        # the file in the decoded order keeps them all.
+        kept = dict(parts)
+        blocks = [xml_text([(tag, value)], 1) if tag in written or tag not in kept else kept[tag]
+            for tag, value in values]
+        repaired = head + "".join(blocks) + foot
+        if repaired != content:
+            changed.append((path, repaired, len(written) > 1))
+    for path, repaired, whole in changed:
+        if not dry_run:
+            write_text(path, repaired)
+        if whole:
+            print(f"  {'would rewrite' if dry_run else 'rewrote'} aidefinition/{os.path.basename(path)}: "
+                "aggroType, the nodes and the ability names")
+    print(f"aidefinition: {len(plans)} definitions, {len(changed)} {'to change' if dry_run else 'changed'}, "
+        f"{missing} without binary")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--game", default=DEFAULT_GAME, help="the Darkspore install folder")
@@ -776,11 +985,12 @@ def main():
     arguments.package = arguments.package or os.path.join(arguments.game, "Data", "AssetData_Binary.package")
     arguments.data = arguments.data or os.path.join(arguments.game, "DarksporeBin", "Server", "data", "serverdata")
 
-    assets = payloads(arguments.package, (NOUN_TYPE, NONPLAYERCLASS_TYPE, MARKERSET_TYPE, LEVEL_TYPE))
+    assets = payloads(arguments.package, (NOUN_TYPE, NONPLAYERCLASS_TYPE, MARKERSET_TYPE, LEVEL_TYPE, AIDEFINITION_TYPE))
     results = [
         fix_nouns(os.path.join(arguments.data, "noun"), assets[NOUN_TYPE], arguments.dry_run),
         fix_nonplayerclasses(os.path.join(arguments.data, "nonplayerclass"), assets[NONPLAYERCLASS_TYPE], arguments.dry_run),
         fix_levels(arguments.data, assets[MARKERSET_TYPE], assets[LEVEL_TYPE], arguments.dry_run),
+        fix_aidefinitions(os.path.join(arguments.data, "aidefinition"), assets[AIDEFINITION_TYPE], arguments.dry_run),
     ]
     if arguments.dry_run:
         print("dry run: nothing was written")
