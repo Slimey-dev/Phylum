@@ -336,6 +336,7 @@ namespace Game {
 			bool mScriptsReady = false;
 			bool mGameStarted = false;
 			bool mLevelLoaded = false;
+			bool mTeleportersCreated = false;
 
 			friend class GameManager;
 	};

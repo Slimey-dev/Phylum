@@ -435,16 +435,44 @@ namespace Game {
 			}
 
 			constexpr std::array<const char*, 2> designSets { "_design", "_design_spawners" };
+			std::vector<MarkerPtr> teleporterMarkers;
 			for (const char* designSet : designSets) {
 				if (mLevel.GetMarkerset(levelName + designSet + ".Markerset", markerset)) {
 					for (const auto& marker : markerset.GetMarkers()) {
 						mMarkers[marker->GetId()] = marker;
-
-						const auto& teleporterData = marker->GetTeleporterData();
-						if (teleporterData) {
-							mObjectManager->Create(marker);
+						if (marker->GetTeleporterData()) {
+							teleporterMarkers.push_back(marker);
 						}
 					}
+				}
+			}
+
+			// Each player that arrives runs this, so the teleporters are made once per game. Only those
+			// whose noun names a passive (the game's teleporter script) and whose destination is a marker
+			// of this level: TunnelTeleporter has no script and no network component, and a destination
+			// of 0 would send a hero to the world's origin.
+			if (!mTeleportersCreated) {
+				mTeleportersCreated = true;
+				for (const auto& marker : teleporterMarkers) {
+					const auto destinationId = marker->GetTeleporterData()->GetDestinationId();
+					const auto noun = NounDatabase::Instance().Get(marker->GetNoun());
+					const auto passive = noun ? PassiveModifiers::NamedBy(*noun) : 0;
+
+					const char* skipped = nullptr;
+					if (passive == 0) {
+						skipped = "its noun runs no teleporter script";
+					} else if (!GetMarker(destinationId)) {
+						skipped = "its destination is not a marker of this level";
+					}
+
+					std::cout << "Teleporter " << marker->GetNounName() << " " << marker->GetId() << " -> " << destinationId;
+					if (skipped) {
+						std::cout << " skipped: " << skipped << std::endl;
+						continue;
+					}
+
+					const auto& teleporter = mObjectManager->Create(marker);
+					std::cout << (teleporter ? "" : " not created") << " passive=" << passive << std::endl;
 				}
 			}
 

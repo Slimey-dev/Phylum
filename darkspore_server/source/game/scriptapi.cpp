@@ -748,6 +748,17 @@ namespace {
 			return 0, 0, 0
 		end
 
+		-- Three numbers, as every position the client gives a script. The security teleporter
+		-- passes them on to RequestModifier, and TeleporterModifier reads them back as float
+		-- properties 0, 1 and 2; one vector there leaves the last two empty and the hero frozen.
+		function nGameObject.GetTeleporterDestination(id)
+			local object = get(id)
+			if object then
+				return unpackVector(object:GetTeleporterDestination())
+			end
+			return 0, 0, 0
+		end
+
 		-- The server keeps no terrain, so where an object stands is already on the ground.
 		nGameObject.GetGroundPosition = nGameObject.GetPosition
 

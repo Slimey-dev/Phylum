@@ -189,19 +189,19 @@ namespace Game {
 			return nullptr;
 		}
 
-		ObjectPtr object;
-		if (const auto& teleporterData = marker->GetTeleporterData()) {
-			const auto& triggerVolumeData = teleporterData->GetTriggerVolumeData();
-			if (triggerVolumeData) {
-				object = CreateTrigger(marker->GetPosition(), triggerVolumeData->GetBoundingBox().extent.x);
-			} else {
-				object = CreateTrigger(marker->GetPosition(), 1.f);
-			}
-		} else {
-			object = Create(marker->GetNoun());
-		}
+		// A teleporter is an object of the marker's own noun (SecurityTeleporter,
+		// BossSecurityTeleporter). Its AI definition names the passive script that runs it: the
+		// script keeps it off while enemies are near, then opens a trigger volume that applies
+		// TeleporterModifier. The level places the visible pads as separate objects, so this one
+		// is not drawn and has no collision; its effects still show.
+		const bool isTeleporter = marker->GetTeleporterData() != nullptr;
+		ObjectPtr object = Create(marker->GetNoun());
 
 		if (object) {
+			if (isTeleporter) {
+				object->SetHasCollision(false);
+			}
+
 			auto overrideAssetId = marker->GetOverrideAssetId();
 			if (overrideAssetId > 0) {
 				object->SetAssetId(overrideAssetId);
@@ -211,9 +211,7 @@ namespace Game {
 			object->SetOrientation(marker->GetRotation());
 			object->SetMarkerId(marker->GetId());
 
-			if (!object->IsTrigger()) {
-				object->SetScale(marker->GetScale());
-			}
+			object->SetScale(isTeleporter ? 0.f : marker->GetScale());
 
 			const auto& markerInteractableData = marker->GetInteractableData();
 			if (markerInteractableData) {
