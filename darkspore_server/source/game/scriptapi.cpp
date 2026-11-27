@@ -11,6 +11,7 @@
 #include "scriptgaps.h"
 #include "scriptsource.h"
 
+#include "utils/casepath.h"
 #include "utils/functions.h"
 
 #include <format>
@@ -56,13 +57,12 @@ namespace {
 			end
 			-- Many files only exist under the hash of their name, and some sit in lua/ instead of the
 			-- folder they are asked by (Objectives!objective_LootCrystals.lua).
+			-- FindGameFile matches names without regard to case, as Windows does.
 			local path
 			for _, candidate in ipairs({ directory .. "/" .. file, directory .. "/" .. HashedScriptName(file),
 				"lua/" .. file, "lua/" .. HashedScriptName(file) }) do
-				local handle = io.open("data/serverdata/" .. candidate .. ".lua")
-				if handle then
-					handle:close()
-					path = "data/serverdata/" .. candidate .. ".lua"
+				path = FindGameFile("data/serverdata/" .. candidate .. ".lua")
+				if path then
 					break
 				end
 			end
@@ -1902,6 +1902,15 @@ namespace Game {
 
 		mState["ReadGameScript"] = [](const std::string& path) {
 			return ScriptSource::Read(path);
+		};
+
+		// The path as it is on disk, whatever the case it is asked in, or nil.
+		mState["FindGameFile"] = [](const std::string& path) -> sol::optional<std::string> {
+			auto found = utils::find_path_ignoring_case(path);
+			if (found.empty()) {
+				return sol::nullopt;
+			}
+			return found.generic_string();
 		};
 
 		// In C++ because Lua's own formatting cannot hold a hash this large on Windows.

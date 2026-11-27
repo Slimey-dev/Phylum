@@ -2,6 +2,7 @@
 // Include
 #include "level.h"
 
+#include "utils/casepath.h"
 #include "utils/functions.h"
 #include "utils/log.h"
 
@@ -243,9 +244,9 @@ namespace Game {
 
 	// Markerset
 	bool Markerset::Load(const std::string& difficultyName, const std::string& markersetAsset) {
-		const std::string fullPath = markersetDataPath + markersetAsset + ".xml";
-		if (!std::filesystem::exists(fullPath)) {
-			std::cout << "Markerset: Could not find '" << fullPath << "'." << std::endl;
+		const std::string fullPath = utils::find_path_ignoring_case(markersetDataPath + markersetAsset + ".xml").string();
+		if (fullPath.empty()) {
+			std::cout << "Markerset: Could not find '" << markersetDataPath << markersetAsset << ".xml'." << std::endl;
 			return false;
 		}
 
@@ -352,9 +353,9 @@ namespace Game {
 	}
 
 	bool Level::Load(const std::string& difficultyName, const std::string& levelName) {
-		const std::string fullPath = levelDataPath + levelName + ".level.xml";
-		if (!std::filesystem::exists(fullPath)) {
-			std::cout << "Level: Could not find '" << fullPath << "'." << std::endl;
+		const std::string fullPath = utils::find_path_ignoring_case(levelDataPath + levelName + ".level.xml").string();
+		if (fullPath.empty()) {
+			std::cout << "Level: Could not find '" << levelDataPath << levelName << ".level.xml'." << std::endl;
 			return false;
 		}
 

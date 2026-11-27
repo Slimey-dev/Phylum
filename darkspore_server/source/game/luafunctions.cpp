@@ -11,6 +11,7 @@
 #include "scripttriggervolumes.h"
 #include "finitevector.h"
 
+#include "utils/casepath.h"
 #include "utils/functions.h"
 #include "utils/log.h"
 
@@ -1532,8 +1533,8 @@ namespace Game {
 
 				if (sourceFilePathComps.size() == 2) {
 					std::string folderName = utils::string_tolower(sourceFilePathComps[1]);
-					std::string sourceFileFullPath = "data/serverdata/" + folderName + "/" + sourceFilePath + ".xml";
-					if (std::filesystem::exists(sourceFileFullPath)) {
+					std::string sourceFileFullPath = utils::find_path_ignoring_case("data/serverdata/" + folderName + "/" + sourceFilePath + ".xml").string();
+					if (!sourceFileFullPath.empty()) {
 						std::string sourceFile = utils::get_file_text(sourceFileFullPath);
 						mAssets.insert(std::make_pair(asset, sourceFile));
 					}
