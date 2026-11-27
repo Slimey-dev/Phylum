@@ -866,9 +866,11 @@ namespace LuaFunction {
 			auto object = LuaGetObject(game.GetObjectManager(), objectValue);
 			if (object && object->HasLocomotionData()) {
 				const auto& locomotionData = object->GetLocomotionData();
-				locomotionData->SetGoalPosition(position);
 				if (teleport) {
-					locomotionData->SetGoalFlags(locomotionData->GetGoalFlags() | 0x020);
+					// A teleport, not a stop: MoveObject only moves the client's object for one.
+					locomotionData->TeleportAndFace(position, glm::vec3(0.f));
+				} else {
+					locomotionData->SetGoalPosition(position);
 				}
 				game.MoveObject(object, *locomotionData);
 			}

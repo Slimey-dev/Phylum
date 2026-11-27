@@ -609,7 +609,9 @@ LAB_009ef634:
 	}
 	
 	void Locomotion::Stop() {
-		// A jump cut short comes down where it was, not in mid-air.
+		// A jump cut short comes down where it was, not in mid-air. The client plays the jump on to
+		// its end, so this stop has to move the client's object (a teleport, see IsTeleport).
+		const bool jumpCutShort = mJumpArc.has_value();
 		if (mJumpArc) {
 			mObject->SetPositionSimulated(mJumpArc->GetGroundAt(mJumpSeconds));
 		}
@@ -630,6 +632,7 @@ LAB_009ef634:
 
 		// set data
 		mGoalFlags = 0x020;
+		mTeleport = jumpCutShort;
 
 		// It stops where it is: 0x020 places the object at its goal, which for something that never
 		// moved (a pet, a turret, a hero before its first step) was still 0,0,0.
@@ -673,6 +676,16 @@ LAB_009ef634:
 			mFacing = glm::normalize(direction);
 			mGoalFlags |= 0x002;
 		}
+		mTeleport = true;
+	}
+
+	bool Locomotion::IsTeleport() const {
+		// A later walk, turn or push replaces the stop, and with it the teleport.
+		return mTeleport && (mGoalFlags & 0x020);
+	}
+
+	void Locomotion::ClearTeleport() {
+		mTeleport = false;
 	}
 
 	void Locomotion::HoldPosition() {
@@ -739,6 +752,10 @@ LAB_009ef634:
 	void Locomotion::ClearExternalVelocity() {
 		// set data
 		mGoalFlags = 0x020;
+		// The server does not follow the push (see Update), so the client's object goes back to where
+		// the server has it, as before stops and teleports were told apart. Approximate until pushes
+		// are simulated.
+		mTeleport = true;
 		mExternalLinearVelocity = glm::zero<glm::vec3>();
 		HoldPosition();
 

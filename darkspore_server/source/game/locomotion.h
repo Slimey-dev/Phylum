@@ -210,6 +210,11 @@ namespace Game {
 			// Darkspore.exe 0xa099c0: moves at once to a position and faces a direction from there.
 			// A direction with no length keeps the facing.
 			void TeleportAndFace(const glm::vec3& position, const glm::vec3& direction);
+			// A stop (0x020) that must move the client's object to the goal (ObjectTeleport), not yet
+			// sent: TeleportAndFace, a jump cut short and the end of a push. Any other stop only stops
+			// the client's walk where it has the object.
+			bool IsTeleport() const;
+			void ClearTeleport();
 			void TurnToFaceTargetObject(const ObjectPtr& object);
 			void MoveToPointWhileFacingTarget(const glm::vec3& position, const ObjectPtr& object);
 			void ApplyExternalVelocity(const glm::vec3& velocity);
@@ -298,6 +303,7 @@ namespace Game {
 			float mJumpSeconds = 0;
 			WalkTimer mWalk;
 			bool mWalkTracked = false;
+			bool mTeleport = false;
 
 			std::deque<SweepHit> mPendingHits;
 			std::unordered_set<uint32_t> mHitIds;

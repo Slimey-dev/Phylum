@@ -710,8 +710,20 @@ namespace RakNet {
 		// The server does not walk heroes, so this is the only place it learns where one
 		// stopped or stands when casting, and shots start from there. Taken for the player's
 		// own hero only, and simulated only, so nothing is sent back to move the client's pose.
+		// Except from a command the client built before it saw a server move of the hero: a teleport
+		// raises the hero's stamp (0xa09b39) and the client stamps commands with it (0x4ded90), so an
+		// older stamp carries the spot the hero left and pulled it back. Approximate: only older
+		// stamps are refused, in case the client also raises it itself.
+		bool stale = false;
 		if (object == player->GetDeployedCharacterObject()) {
-			object->SetPositionSimulated(command.data.position);
+			const auto lead = static_cast<int32_t>(command.data.inputSyncStamp - object->GetInputSyncStamp());
+			stale = lead < 0;
+			if (!stale) {
+				object->SetPositionSimulated(command.data.position);
+			} else {
+				mGame.GetLua().Trace(std::format("STALE object={} stamp={} server={}", object->GetId(),
+					command.data.inputSyncStamp, object->GetInputSyncStamp()));
+			}
 		}
 #if 0
 		std::cout << "------------------------" << std::endl;
@@ -738,7 +750,8 @@ namespace RakNet {
 				}
 
 				locomotionData->SetGoalPosition(command.movement.goalPosition);
-				locomotionData->SetPartialGoalPosition(command.data.position);
+				// A stale command's walk starts where the server has the hero, not where it was.
+				locomotionData->SetPartialGoalPosition(stale ? object->GetPosition() : command.data.position);
 				locomotionData->SetGoalFlags(locomotionData->GetGoalFlags() | command.movement.goalFlags);
 
 				mGame.MoveObject(object, *locomotionData, Game::Instance::MoveOrigin::Player);

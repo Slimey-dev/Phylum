@@ -826,8 +826,8 @@ namespace Game {
 			}
 		}
 
-		bool teleport = goalFlags & 0x020;
-		if (teleport) {
+		bool stop = goalFlags & 0x020;
+		if (stop) {
 			// A walk under way would drag a tracked hero back onto its old line on the next update.
 			if (const auto& locomotion = object->GetLocomotionData()) {
 				locomotion->EndWalk();
@@ -838,12 +838,28 @@ namespace Game {
 				object->SetFlags(object->GetFlags() & ~Object::UpdateLocomotion);
 				return;
 			}
+			// Only a teleport moves the client's object (ObjectTeleport, 0x5392f0, warps it). Any other
+			// stop of something the player doesn't steer, a death, a behavior's exit or a script's
+			// Stop, goes as ObjectPlayerMove 0x020, which stops the client's walk where it has the
+			// object (0x9f8de0): teleported to the server's guess, every corpse snapped across the floor.
+			const bool teleport = object->IsPlayerControlled() || locomotionData.IsTeleport();
 			for (const auto& [_, client] : mServer->GetClients()) {
+				if (!teleport) {
+					mServer->SendObjectPlayerMove(client, object, locomotionData);
+					continue;
+				}
 				mServer->SendObjectTeleport(client, object, object->GetPosition(), object->GetOrientation());
 				if (serverMovesHero) {
 					// Also ends a walk the hero was given: the update clears its target.
 					mServer->SendLocomotionMove(client, object, locomotionData);
 				}
+			}
+			if (const auto& locomotion = object->GetLocomotionData()) {
+				locomotion->ClearTeleport();
+			}
+			if (!object->IsPlayerControlled()) {
+				// Sent; the update must not send it again as a teleport.
+				object->SetFlags(object->GetFlags() & ~Object::UpdateLocomotion);
 			}
 		} else {
 			// A hero the server walks stops short by its stop distance, where the client stops it.
@@ -875,6 +891,14 @@ namespace Game {
 				if (serverMovesHero) {
 					mServer->SendLocomotionMove(client, object, locomotionData);
 					continue;
+				}
+				if (origin == MoveOrigin::Player) {
+					// Not back to the player who walked: the client drops it for its own hero unless
+					// busy (0x5393d0), and then it put back an earlier walk's goal mid-attack.
+					const auto& player = client->GetPlayer();
+					if (player && player->GetDeployedCharacterObject() == object) {
+						continue;
+					}
 				}
 				mServer->SendObjectPlayerMove(client, object, locomotionData);
 				if (!steered) {
@@ -1663,8 +1687,13 @@ namespace Game {
 				} else {
 					// The client flies a projectile itself from its parameters.
 					if (!object->IsProjectile() && (locomotion->GetGoalFlags() & 0x20)) {
-						mServer->SendObjectTeleport(client, object, object->GetPosition(),
-							OrientationFromDirection(locomotion->GetFacing()).value_or(object->GetOrientation()));
+						// As in MoveObject: only a teleport moves the client's object, a stop only stops it.
+						if (locomotion->IsTeleport()) {
+							mServer->SendObjectTeleport(client, object, object->GetPosition(),
+								OrientationFromDirection(locomotion->GetFacing()).value_or(object->GetOrientation()));
+						} else {
+							mServer->SendObjectPlayerMove(client, object, *locomotion);
+						}
 					} else {
 #if 0 // If unreliable update
 						mServer->SendLocomotionDataUnreliableUpdate(client, object, locomotion->GetGoalPosition());
@@ -1677,6 +1706,10 @@ namespace Game {
 			}
 		}
 
+		if ((flags & Object::UpdateLocomotion) && object->GetLocomotionData()) {
+			// Sent to every client.
+			object->GetLocomotionData()->ClearTeleport();
+		}
 		object->SetFlags(newFlags);
 		object->ResetUpdateBits();
 	}

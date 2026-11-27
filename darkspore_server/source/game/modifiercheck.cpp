@@ -493,6 +493,7 @@ namespace {
 				CheckTeleportMovesAndIsSent(false);
 				CheckTeleportMovesAndIsSent(true);
 				CheckHealDoesNotRaiseTheDead();
+				CheckDeathStopsWithoutTeleport();
 				CheckChannelEndsOnNewAction();
 				CheckLostModifierEndsWatcher(slow);
 				CheckSwapEndsFieldMedicBuff();
@@ -989,6 +990,31 @@ namespace {
 
 				// A player-controlled object left in the world changes the checks after this one.
 				agent->SetPlayerIndex(0xFF);
+				agent->MarkForDeletion();
+			}
+
+			// A mob that dies mid-walk is stopped where the client has it (ObjectPlayerMove 0x020), not
+			// teleported to the server's spot: every corpse snapped across the floor.
+			void CheckDeathStopsWithoutTeleport() {
+				auto agent = Spawn();
+				if (!agent || !agent->HasLocomotionData()) {
+					Report("death-stops-without-teleport", false, "no agent");
+					return;
+				}
+
+				const auto& locomotion = agent->GetLocomotionData();
+				locomotion->SetGoalPosition(agent->GetPosition() + glm::vec3(20.f, 0.f, 0.f));
+				mGame.MoveObject(agent, *locomotion);
+				Wait(100);
+
+				mPackets->clear();
+				agent->Kill();
+				Wait(60);
+				const bool stopSent = Saw("ObjectPlayerMove");
+				const bool teleportSent = Saw("ObjectTeleport");
+				const bool stopped = (locomotion->GetGoalFlags() & 0x020) != 0;
+				Report("death-stops-without-teleport", stopSent && !teleportSent && stopped,
+					std::format("stopSent={} teleportSent={} stopped={}", stopSent, teleportSent, stopped));
 				agent->MarkForDeletion();
 			}
 
