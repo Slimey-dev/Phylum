@@ -180,7 +180,13 @@ namespace Game {
 		mOverrideAssetId = utils::xml_get_text_node<uint64_t>(node, "assetOverrideId");
 		mTargetId = utils::xml_get_text_node<uint32_t>(node, "targetMarkerId");
 
-		if (auto componentDataNode = node.child("componentData")) {
+		// recap_parser exports this node as SharedComponentData, its name in the game's data;
+		// older exports called it componentData. Without it no teleporter or interactable is read.
+		auto componentDataNode = node.child("SharedComponentData");
+		if (!componentDataNode) {
+			componentDataNode = node.child("componentData");
+		}
+		if (componentDataNode) {
 			if (auto teleporterNode = componentDataNode.child("teleporter")) {
 				mTeleporterData = std::make_unique<TeleporterData>();
 				mTeleporterData->Read(teleporterNode);

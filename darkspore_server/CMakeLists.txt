@@ -131,6 +131,7 @@ CPMAddPackage(
 add_executable(recap_tests
     tests/main.cpp
     tests/casepath_test.cpp
+    tests/marker_test.cpp
     tests/scriptsource_test.cpp
     tests/scriptgaps_test.cpp
     tests/projectilesweep_test.cpp
@@ -188,7 +189,10 @@ add_executable(recap_tests
     source/game/projectilepasslist.cpp
     source/game/walktimer.cpp
     source/game/effectlist.cpp
-    source/utils/casepath.cpp)
+    source/utils/casepath.cpp
+    source/game/level.cpp
+    source/game/collision.cpp
+    source/utils/functions.cpp)
 target_include_directories(recap_tests PRIVATE source ${doctest_SOURCE_DIR})
 target_link_libraries(recap_tests PRIVATE lua pugixml)
 
