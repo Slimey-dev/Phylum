@@ -113,14 +113,22 @@ namespace Game {
 	}
 
 	// DefaultDirectorRandom
+	DefaultDirectorRandom::DefaultDirectorRandom() : DefaultDirectorRandom(std::random_device {}()) {}
+
+	DefaultDirectorRandom::DefaultDirectorRandom(uint32_t seed) : mSeed(seed), mGenerator(seed) {}
+
 	float DefaultDirectorRandom::Unit() {
 		// uniform_real_distribution can round up to 1 itself
-		const float value = utils::random::get<float>(0.f, 1.f);
+		const float value = std::uniform_real_distribution<float>(0.f, 1.f)(mGenerator);
 		return value < 1.f ? value : std::nextafter(1.f, 0.f);
 	}
 
 	uint32_t DefaultDirectorRandom::Below(uint32_t count) {
-		return count == 0 ? 0 : utils::random::get<uint32_t>(0, count - 1);
+		return count == 0 ? 0 : std::uniform_int_distribution<uint32_t>(0, count - 1)(mGenerator);
+	}
+
+	uint32_t DefaultDirectorRandom::GetSeed() const {
+		return mSeed;
 	}
 
 	// ScriptedDirectorRandom

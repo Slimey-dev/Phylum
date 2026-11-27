@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <random>
 #include <vector>
 
 // Game
@@ -31,11 +32,21 @@ namespace Game {
 	};
 
 	// DefaultDirectorRandom
-	// Rolls with utils::random.
+	// Rolls with a generator of its own. utils::random's is never seeded, so every game would make
+	// the same picks; this one is seeded from std::random_device, or from a seed given to replay a run.
 	class DefaultDirectorRandom final : public DirectorRandom {
 		public:
+			DefaultDirectorRandom();
+			explicit DefaultDirectorRandom(uint32_t seed);
+
 			float Unit() override;
 			uint32_t Below(uint32_t count) override;
+
+			uint32_t GetSeed() const;
+
+		private:
+			uint32_t mSeed;
+			std::mt19937 mGenerator;
 	};
 
 	// ScriptedDirectorRandom

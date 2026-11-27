@@ -51,17 +51,28 @@ namespace Game {
 	std::vector<DirectorSpawnRequest> DirectorSpawner::Update(const std::vector<glm::vec3>& heroes, bool doingWell,
 		const DirectorPool& pool, uint32_t difficulty, DirectorRandom& random
 	) {
+		// Only a hero that walked here can arrive at a point; one that appeared marks the points around
+		// it as near without hitting them.
+		std::vector<glm::vec3> walked;
+		for (size_t i = 0; i < heroes.size(); ++i) {
+			if (i < mLastHeroes.size() && glm::distance(mLastHeroes[i], heroes[i]) <= directorArrivalJump) {
+				walked.push_back(heroes[i]);
+			}
+		}
+		mLastHeroes = heroes;
+
+		const Heroes now { heroes, walked };
 		std::vector<DirectorSpawnRequest> spawns;
 		for (size_t i = 0; i < mWanderPoints.size(); ++i) {
-			UpdateWanderPoint(mWanderPoints[i], i, heroes, pool, random, spawns);
+			UpdateWanderPoint(mWanderPoints[i], i, now, pool, random, spawns);
 		}
 		for (auto& set : mSpikeSets) {
-			UpdateSpikeSet(set, heroes, doingWell, pool, difficulty, random, spawns);
+			UpdateSpikeSet(set, now, doingWell, pool, difficulty, random, spawns);
 		}
 		return spawns;
 	}
 
-	void DirectorSpawner::UpdateWanderPoint(WanderPoint& point, size_t index, const std::vector<glm::vec3>& heroes,
+	void DirectorSpawner::UpdateWanderPoint(WanderPoint& point, size_t index, const Heroes& heroes,
 		const DirectorPool& pool, DirectorRandom& random, std::vector<DirectorSpawnRequest>& spawns
 	) {
 		// RollWanderHit gives nothing after the fifth hit, so such a point is done too.
@@ -70,8 +81,9 @@ namespace Game {
 			return;
 		}
 
-		const bool near = AnyHeroWithin(point.position, heroes, directorWanderHitRadius);
-		const bool arrived = point.seen && near && !point.heroNear;
+		const bool near = AnyHeroWithin(point.position, heroes.all, directorWanderHitRadius);
+		const bool walkedNear = AnyHeroWithin(point.position, heroes.walked, directorWanderHitRadius);
+		const bool arrived = point.seen && walkedNear && !point.heroNear;
 		point.seen = true;
 		point.heroNear = near;
 		if (!arrived) {
@@ -100,17 +112,20 @@ namespace Game {
 		}
 	}
 
-	void DirectorSpawner::UpdateSpikeSet(SpikeSet& set, const std::vector<glm::vec3>& heroes, bool doingWell,
+	void DirectorSpawner::UpdateSpikeSet(SpikeSet& set, const Heroes& heroes, bool doingWell,
 		const DirectorPool& pool, uint32_t difficulty, DirectorRandom& random, std::vector<DirectorSpawnRequest>& spawns
 	) {
 		if (set.fired) {
 			return;
 		}
 
-		const bool near = std::any_of(set.points.begin(), set.points.end(), [&](const SpikePoint& point) {
-			return AnyHeroWithin(point.position, heroes, directorSpikeTriggerRadius);
-		});
-		const bool arrived = set.seen && near && !set.heroNear;
+		const auto anyWithin = [&set](const std::vector<glm::vec3>& positions) {
+			return std::any_of(set.points.begin(), set.points.end(), [&](const SpikePoint& point) {
+				return AnyHeroWithin(point.position, positions, directorSpikeTriggerRadius);
+			});
+		};
+		const bool near = anyWithin(heroes.all);
+		const bool arrived = set.seen && anyWithin(heroes.walked) && !set.heroNear;
 		set.seen = true;
 		set.heroNear = near;
 		if (!arrived) {

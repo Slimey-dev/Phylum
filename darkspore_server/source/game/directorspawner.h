@@ -27,6 +27,11 @@ namespace Game {
 	// A spike fires once, the first time a hero comes this close to any of its points.
 	constexpr float directorSpikeTriggerRadius = 25.f;
 
+	// A hero who moved further than this since the last update did not walk there: a teleporter, a
+	// swap or a revive put it down. It does not count as arriving, or every point around where it
+	// landed would fire at once, next to it. Updates are a quarter second apart.
+	constexpr float directorArrivalJump = 12.f;
+
 	// How far a spawned creature is set from its point. The client scatters by up to 10 m along +x
 	// and +y and projects onto the navmesh (0x9fb180); the server has no navmesh, so it stays close.
 	constexpr float directorSpawnScatter = 2.f;
@@ -59,7 +64,8 @@ namespace Game {
 			void AddSpikeSet(std::string name, std::vector<SpikePoint> points, uint32_t section);
 
 			// Checks the points against where the heroes are, and returns the creatures to spawn.
-			// doingWell is the talk's "doing well" for the next spike.
+			// doingWell is the talk's "doing well" for the next spike. heroes keeps the same order from
+			// one update to the next; a hero whose index changed counts as having jumped.
 			std::vector<DirectorSpawnRequest> Update(const std::vector<glm::vec3>& heroes, bool doingWell,
 				const DirectorPool& pool, uint32_t difficulty, DirectorRandom& random);
 
@@ -88,11 +94,18 @@ namespace Game {
 				bool seen = false;
 			};
 
-			void UpdateWanderPoint(WanderPoint& point, size_t index, const std::vector<glm::vec3>& heroes,
+			// The heroes now, and those of them that walked here since the last update.
+			struct Heroes {
+				const std::vector<glm::vec3>& all;
+				const std::vector<glm::vec3>& walked;
+			};
+
+			void UpdateWanderPoint(WanderPoint& point, size_t index, const Heroes& heroes,
 				const DirectorPool& pool, DirectorRandom& random, std::vector<DirectorSpawnRequest>& spawns);
-			void UpdateSpikeSet(SpikeSet& set, const std::vector<glm::vec3>& heroes, bool doingWell,
+			void UpdateSpikeSet(SpikeSet& set, const Heroes& heroes, bool doingWell,
 				const DirectorPool& pool, uint32_t difficulty, DirectorRandom& random, std::vector<DirectorSpawnRequest>& spawns);
 
+			std::vector<glm::vec3> mLastHeroes;
 			std::vector<WanderPoint> mWanderPoints;
 			std::vector<SpikeSet> mSpikeSets;
 			SpikeHistory mSpikeHistory;

@@ -6,6 +6,8 @@
 
 #include <glm/glm.hpp>
 
+#include <cmath>
+#include <string>
 #include <vector>
 
 using namespace Game;
@@ -24,7 +26,9 @@ namespace {
 		return pool;
 	}
 
-	const glm::vec3 far { 500.f, 0.f, 0.f };
+	// Outside and inside the 25 m radius of a point at the origin, one walk step (10 m) apart.
+	const glm::vec3 outside { 30.f, 0.f, 0.f };
+	const glm::vec3 inside { 20.f, 0.f, 0.f };
 }
 
 TEST_CASE("a wander point a hero starts next to does not fire until the hero comes back") {
@@ -33,13 +37,13 @@ TEST_CASE("a wander point a hero starts next to does not fire until the hero com
 	const auto pool = OneTypePool();
 
 	// A spawn roll, a size of one, and no scatter.
-	ScriptedDirectorRandom random({ 0.1f, 0.9f, 0.5f, 0.5f }, {});
+	ScriptedDirectorRandom random({ 0.1f, 0.9f, 0.5f, 0.5f }, { 0 });
 	CHECK(spawner.Update({ { 5.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	CHECK(spawner.Update({ { 15.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	CHECK(spawner.Update({ outside }, true, pool, 1, random).empty());
 	CHECK(random.UnitsLeft() == 4);
 
-	CHECK(spawner.Update({ far }, true, pool, 1, random).empty());
-
-	const auto spawns = spawner.Update({ { 10.f, 0.f, 0.f } }, true, pool, 1, random);
+	const auto spawns = spawner.Update({ inside }, true, pool, 1, random);
 	REQUIRE(spawns.size() == 1);
 	CHECK(spawns[0].noun == minionNoun);
 	CHECK(spawns[0].position == glm::vec3(0.f, 0.f, 0.f));
@@ -53,11 +57,11 @@ TEST_CASE("a wander point fires at most once") {
 
 	// The type pick is a Below() roll; with one minion type it is 0.
 	ScriptedDirectorRandom random({ 0.1f, 0.9f, 0.5f, 0.5f }, { 0 });
-	spawner.Update({ far }, true, pool, 1, random);
-	CHECK(spawner.Update({ { 10.f, 0.f, 0.f } }, true, pool, 1, random).size() == 1);
+	spawner.Update({ outside }, true, pool, 1, random);
+	CHECK(spawner.Update({ inside }, true, pool, 1, random).size() == 1);
 
-	spawner.Update({ far }, true, pool, 1, random);
-	CHECK(spawner.Update({ { 10.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	spawner.Update({ outside }, true, pool, 1, random);
+	CHECK(spawner.Update({ inside }, true, pool, 1, random).empty());
 	CHECK(random.Overruns() == 0);
 }
 
@@ -67,16 +71,16 @@ TEST_CASE("a missed first hit leaves the point for later hits at the higher chan
 	const auto pool = OneTypePool();
 
 	// 0.2 misses the first hit's 18% and makes the second hit's 25%.
-	ScriptedDirectorRandom random({ 0.2f, 0.2f, 0.9f, 0.5f, 0.5f }, {});
-	spawner.Update({ far }, true, pool, 1, random);
-	CHECK(spawner.Update({ { 10.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	ScriptedDirectorRandom random({ 0.2f, 0.2f, 0.9f, 0.5f, 0.5f }, { 0 });
+	spawner.Update({ outside }, true, pool, 1, random);
+	CHECK(spawner.Update({ inside }, true, pool, 1, random).empty());
 
 	// Staying near is not another hit.
-	CHECK(spawner.Update({ { 12.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	CHECK(spawner.Update({ { 22.f, 0.f, 0.f } }, true, pool, 1, random).empty());
 	CHECK(random.UnitsLeft() == 4);
 
-	spawner.Update({ far }, true, pool, 1, random);
-	CHECK(spawner.Update({ { 10.f, 0.f, 0.f } }, true, pool, 1, random).size() == 1);
+	spawner.Update({ outside }, true, pool, 1, random);
+	CHECK(spawner.Update({ inside }, true, pool, 1, random).size() == 1);
 }
 
 TEST_CASE("a lucky size roll spawns a clump of wanderers around the point") {
@@ -85,9 +89,9 @@ TEST_CASE("a lucky size roll spawns a clump of wanderers around the point") {
 	const auto pool = OneTypePool();
 
 	// 0.01 is under the 2% for four.
-	ScriptedDirectorRandom random({ 0.1f, 0.01f, 0.f, 1.f, 0.5f, 0.5f, 0.25f, 0.75f, 0.5f, 0.5f }, {});
-	spawner.Update({ far }, true, pool, 1, random);
-	const auto spawns = spawner.Update({ { 40.f, 30.f, 2.f } }, true, pool, 1, random);
+	ScriptedDirectorRandom random({ 0.1f, 0.01f, 0.f, 1.f, 0.5f, 0.5f, 0.25f, 0.75f, 0.5f, 0.5f }, { 0, 0, 0, 0 });
+	spawner.Update({ { 40.f, 10.f, 2.f } }, true, pool, 1, random);
+	const auto spawns = spawner.Update({ { 40.f, 20.f, 2.f } }, true, pool, 1, random);
 	REQUIRE(spawns.size() == 4);
 	for (const auto& spawn : spawns) {
 		CHECK(std::abs(spawn.position.x - 40.f) <= directorSpawnScatter);
@@ -98,6 +102,42 @@ TEST_CASE("a lucky size roll spawns a clump of wanderers around the point") {
 	CHECK(spawns[0].position.y == doctest::Approx(40.f + directorSpawnScatter));
 }
 
+TEST_CASE("a hero who lands from a teleport does not set off the points around it") {
+	DirectorSpawner spawner;
+	for (float x = -10.f; x <= 10.f; x += 5.f) {
+		spawner.AddWanderPoint({ x, 0.f, 0.f }, 0);
+	}
+	spawner.AddSpikeSet("landing", { { { 0.f, 5.f, 0.f } } }, 0);
+	const auto pool = OneTypePool();
+
+	// Every roll would spawn, so any arrival would show.
+	ScriptedDirectorRandom random(std::vector<float>(64, 0.f), std::vector<uint32_t>(64, 0));
+	spawner.Update({ { 500.f, 0.f, 0.f } }, true, pool, 1, random);
+	CHECK(spawner.Update({ { 0.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	CHECK(spawner.Update({ { 3.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	CHECK(random.UnitsLeft() == 64);
+
+	// Walking out and back in is an arrival again: at 40 m the nearest point (x 10) is 30 m away,
+	// at 30 m it is 20 m away.
+	for (float x = 10.f; x <= 50.f; x += 10.f) {
+		spawner.Update({ { x, 0.f, 0.f } }, true, pool, 1, random);
+	}
+	spawner.Update({ { 40.f, 0.f, 0.f } }, true, pool, 1, random);
+	CHECK(!spawner.Update({ { 30.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+}
+
+TEST_CASE("a hero who joins next to a point does not set it off") {
+	DirectorSpawner spawner;
+	spawner.AddWanderPoint({ 0.f, 0.f, 0.f }, 0);
+	const auto pool = OneTypePool();
+
+	ScriptedDirectorRandom random(std::vector<float>(8, 0.f), std::vector<uint32_t>(8, 0));
+	spawner.Update({ outside }, true, pool, 1, random);
+	// A second hero appears beside the point while the first stays put.
+	CHECK(spawner.Update({ outside, { 1.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	CHECK(random.UnitsLeft() == 8);
+}
+
 TEST_CASE("a spike fires once and spreads its group over its points") {
 	DirectorSpawner spawner;
 	spawner.AddSpikeSet("spike_a", {
@@ -106,9 +146,9 @@ TEST_CASE("a spike fires once and spreads its group over its points") {
 	}, 0);
 	const auto pool = OneTypePool();
 
-	DefaultDirectorRandom random;
-	spawner.Update({ far }, true, pool, 1, random);
-	const auto spawns = spawner.Update({ { 20.f, 0.f, 0.f } }, true, pool, 1, random);
+	DefaultDirectorRandom random(1234);
+	spawner.Update({ { 40.f, 0.f, 0.f } }, true, pool, 1, random);
+	const auto spawns = spawner.Update({ { 30.f, 0.f, 0.f } }, true, pool, 1, random);
 
 	// From (Skip, Medium) a team doing well gets a Hard spike: section A's 50.
 	CHECK(spawner.GetSpikeHistory().last == SpikeIntensity::Hard);
@@ -122,8 +162,8 @@ TEST_CASE("a spike fires once and spreads its group over its points") {
 		CHECK(std::string(spawns[i].point) == "spike_a");
 	}
 
-	spawner.Update({ far }, true, pool, 1, random);
-	CHECK(spawner.Update({ { 20.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	spawner.Update({ { 40.f, 0.f, 0.f } }, true, pool, 1, random);
+	CHECK(spawner.Update({ { 30.f, 0.f, 0.f } }, true, pool, 1, random).empty());
 }
 
 TEST_CASE("a skipped spike spawns nothing but still counts in the history") {
@@ -132,13 +172,26 @@ TEST_CASE("a skipped spike spawns nothing but still counts in the history") {
 	spawner.AddSpikeSet("second", { { { 200.f, 0.f, 0.f } } }, 0);
 	const auto pool = OneTypePool();
 
-	DefaultDirectorRandom random;
-	spawner.Update({ far }, true, pool, 1, random);
-	CHECK(!spawner.Update({ { 10.f, 0.f, 0.f } }, true, pool, 1, random).empty());
+	DefaultDirectorRandom random(1234);
+	spawner.Update({ { 30.f, 0.f, 0.f } }, true, pool, 1, random);
+	CHECK(!spawner.Update({ { 20.f, 0.f, 0.f } }, true, pool, 1, random).empty());
 
-	// After Hard, a team doing poorly gets Skip.
-	CHECK(spawner.Update({ { 210.f, 0.f, 0.f } }, false, pool, 1, random).empty());
+	// Walk on to the second; after Hard, a team doing poorly gets Skip.
+	for (float x = 30.f; x <= 170.f; x += 10.f) {
+		spawner.Update({ { x, 0.f, 0.f } }, false, pool, 1, random);
+	}
+	CHECK(spawner.Update({ { 180.f, 0.f, 0.f } }, false, pool, 1, random).empty());
 	CHECK(spawner.GetSpikeHistory().last == SpikeIntensity::Skip);
+}
+
+TEST_CASE("the default randomness replays a run from its seed") {
+	DefaultDirectorRandom first(99);
+	DefaultDirectorRandom second(99);
+	CHECK(first.GetSeed() == 99);
+	for (int i = 0; i < 8; ++i) {
+		CHECK(first.Unit() == second.Unit());
+		CHECK(first.Below(10) == second.Below(10));
+	}
 }
 
 TEST_CASE("a spike set's section is the one most of its markers name") {

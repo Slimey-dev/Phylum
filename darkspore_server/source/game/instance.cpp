@@ -175,7 +175,7 @@ namespace Game {
 			// The six enemies the client preloads (ChainVoteMsgs). A slot with no enemy stays 0: the
 			// hash of an empty name is no noun, and the client's preload does not check for one.
 			const auto& nounDatabase = NounDatabase::Instance();
-			std::cout << "Director: difficulty " << mDirectorDifficulty << ", enemies";
+			std::cout << "Director: seed " << mDirectorRandom.GetSeed() << ", difficulty " << mDirectorDifficulty << ", enemies";
 			for (uint32_t i = 0; i < directorLevelPoolSize; ++i) {
 				const uint32_t minion = i < levelPool.minions.size() ? levelPool.minions[i].noun : 0;
 				const uint32_t special = i < levelPool.specials.size() ? levelPool.specials[i].noun : 0;
