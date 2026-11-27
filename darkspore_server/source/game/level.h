@@ -136,7 +136,16 @@ namespace Game {
 			uint32_t GetNoun() const;
 			uint32_t GetTargetId() const;
 
+			// The section of a director spawn point (spawnPointDef sectionType): 0, 1 and 2 are the
+			// level's sections A, B and C, 3 is any. 3 without one, as the SpawnPoint_Director* nouns
+			// default it.
+			uint32_t GetSpawnSection() const;
+
 			float GetScale() const;
+
+			// spawnPointDef activatesSpike. True without one, as the SpawnPoint_Director* nouns default
+			// it; every director marker in the shipped data sets it true.
+			bool ActivatesSpike() const;
 
 		private:
 			std::unique_ptr<TeleporterData> mTeleporterData;
@@ -153,11 +162,13 @@ namespace Game {
 			uint32_t mId = 0;
 			uint32_t mNoun = 0;
 			uint32_t mTargetId = 0;
+			uint32_t mSpawnSection = 3;
 
 			float mScale = 0;
 
 			bool mVisible = false;
 			bool mHasCollision = false;
+			bool mActivatesSpike = true;
 
 			friend class Markerset;
 	};
@@ -174,13 +185,33 @@ namespace Game {
 			const std::vector<MarkerPtr>& GetMarkers() const;
 			std::vector<MarkerPtr> GetMarkersByType(uint32_t noun) const;
 
+			// The <group> and <weight> after the markers: "" and 1 when the file has none.
+			const std::string& GetGroup() const;
+			float GetWeight() const;
+
 		private:
 			std::unordered_map<uint32_t, std::vector<MarkerPtr>> mMarkersByNoun;
 			std::vector<MarkerPtr> mMarkers;
 
 			std::string mName;
+			std::string mGroup;
+
+			float mWeight = 1;
 
 			friend class Level;
+	};
+
+	// MarkersetEntry
+	// One markerset a level lists. The client loads every markerset of group "none" and picks one
+	// markerset of each other group by weight (0x9d6340).
+	struct MarkersetEntry {
+		std::string name;
+		std::string group;
+		float weight = 1;
+
+		// Reads a <markersets> entry of a level. A <group> or <weight> the entry does not have comes
+		// from the markerset itself, when given one, and is "" and 1 otherwise.
+		void Read(pugi::xml_node node, const Markerset* markerset = nullptr);
 	};
 
 	// DirectorClass
@@ -215,6 +246,10 @@ namespace Game {
 			DirectorClass GetAgent(size_t idx) const;
 			DirectorClass GetCaptain(size_t idx) const;
 
+			const std::vector<DirectorClass>& GetMinions() const;
+			const std::vector<DirectorClass>& GetSpecials() const;
+			const std::vector<DirectorClass>& GetAgents() const;
+
 		private:
 			std::vector<DirectorClass> mMinions;
 			std::vector<DirectorClass> mSpecial;
@@ -233,12 +268,16 @@ namespace Game {
 
 			bool GetMarkerset(const std::string& name, Markerset& markerset) const;
 
+			// Every markerset the level lists, in its order, with group and weight.
+			const std::vector<MarkersetEntry>& GetMarkersetEntries() const;
+
 			const LevelConfig& GetConfig() const;
 			const LevelConfig& GetFirstTimeConfig() const;
 			const LevelConfig& GetPlanetConfig() const;
 
 		private:
 			std::unordered_map<uint32_t, Markerset> mMarkersets;
+			std::vector<MarkersetEntry> mMarkersetEntries;
 
 			LevelConfig mConfig;
 			LevelConfig mFirstTimeConfig;

@@ -196,9 +196,18 @@ namespace Game {
 				mInteractableData = std::make_unique<MarkerInteractableData>();
 				mInteractableData->Read(interactableNode);
 			}
+
+			// SpawnPointDef: sectionType enum at +0, activatesSpike at +4. Either one can be missing.
+			if (auto spawnPointNode = componentDataNode.child("spawnPointDef")) {
+				if (spawnPointNode.child("sectionType")) {
+					mSpawnSection = utils::xml_get_text_node<uint32_t>(spawnPointNode, "sectionType");
+				}
+				if (spawnPointNode.child("activatesSpike")) {
+					mActivatesSpike = utils::xml_get_text_node<bool>(spawnPointNode, "activatesSpike");
+				}
+			}
 			/*
 			SharedComponentData->add("eventListenerDef", nullable_type, std::tuple(0x08, EventListenerDef));
-			SharedComponentData->add("spawnPointDef", nullable_type, std::tuple(0x10, SpawnPointDef));
 			SharedComponentData->add("spawnTrigger", nullable_type, std::tuple(0x0C, SpawnTriggerDef));
 			SharedComponentData->add("defaultGfxState", nullable_type, std::tuple(0x18, GameObjectGfxStateTuning));
 			SharedComponentData->add("combatant", nullable_type, std::tuple(0x1C, CombatantDef));
@@ -244,8 +253,16 @@ namespace Game {
 		return mTargetId;
 	}
 
+	uint32_t Marker::GetSpawnSection() const {
+		return mSpawnSection;
+	}
+
 	float Marker::GetScale() const {
 		return mScale;
+	}
+
+	bool Marker::ActivatesSpike() const {
+		return mActivatesSpike;
 	}
 
 	// Markerset
@@ -281,6 +298,14 @@ namespace Game {
 			mMarkersByNoun[marker->mNoun].push_back(marker);
 			mMarkers.push_back(std::move(marker));
 		}
+
+		// The Markerset asset's group key (+0x14) and weight (+0x18)
+		if (node.child("group")) {
+			mGroup = utils::xml_get_text_node(node, "group");
+		}
+		if (node.child("weight")) {
+			mWeight = utils::xml_get_text_node<float>(node, "weight");
+		}
 	}
 
 	const std::vector<MarkerPtr>& Markerset::GetMarkers() const {
@@ -292,6 +317,31 @@ namespace Game {
 			return it->second;
 		}
 		return {};
+	}
+
+	const std::string& Markerset::GetGroup() const {
+		return mGroup;
+	}
+
+	float Markerset::GetWeight() const {
+		return mWeight;
+	}
+
+	// MarkersetEntry
+	void MarkersetEntry::Read(pugi::xml_node node, const Markerset* markerset) {
+		name = utils::xml_get_text_node(node, "markersetAsset");
+
+		if (node.child("group")) {
+			group = utils::xml_get_text_node(node, "group");
+		} else {
+			group = markerset ? markerset->GetGroup() : "";
+		}
+
+		if (node.child("weight")) {
+			weight = utils::xml_get_text_node<float>(node, "weight");
+		} else {
+			weight = markerset ? markerset->GetWeight() : 1.f;
+		}
 	}
 
 	// DirectorClass
@@ -349,6 +399,18 @@ namespace Game {
 		return mCaptain.size() > idx ? mCaptain[idx] : DirectorClass();
 	}
 
+	const std::vector<DirectorClass>& LevelConfig::GetMinions() const {
+		return mMinions;
+	}
+
+	const std::vector<DirectorClass>& LevelConfig::GetSpecials() const {
+		return mSpecial;
+	}
+
+	const std::vector<DirectorClass>& LevelConfig::GetAgents() const {
+		return mAgent;
+	}
+
 	// Level
 	Level::Level() {
 
@@ -372,6 +434,7 @@ namespace Game {
 				return false;
 			}
 
+			mMarkersetEntries.clear();
 			for (const auto& child : node.child("markersets")) {
 				if (!utils::string_iequals(child.name(), "entry")) {
 					continue;
@@ -387,6 +450,8 @@ namespace Game {
 					it->second.mName = markersetAsset;
 					it->second.Load(difficultyName, markersetAsset);
 				}
+
+				mMarkersetEntries.emplace_back().Read(child, &it->second);
 			}
 
 			mConfig.Read(node.child("levelConfig"));
@@ -410,6 +475,10 @@ namespace Game {
 			return true;
 		}
 		return false;
+	}
+
+	const std::vector<MarkersetEntry>& Level::GetMarkersetEntries() const {
+		return mMarkersetEntries;
 	}
 
 	const LevelConfig& Level::GetConfig() const {

@@ -23,6 +23,8 @@
 #include <functional>
 
 #include "castpursuit.h"
+#include "director.h"
+#include "directorspawner.h"
 #include "recentdamage.h"
 
 // Game
@@ -135,7 +137,14 @@ namespace Game {
 
 			bool IsLevelLoaded() const;
 			bool LoadLevel();
-			std::vector<uint32_t> GetUsableEnemyNouns() const;
+			// The level's DirectorClass entries with their nouns and challenge values looked up. An
+			// entry whose noun the server does not have is left out.
+			std::vector<DirectorClassEntry> GetDirectorEntries(const std::vector<DirectorClass>& classes) const;
+			// The director's spawn points: wander points and spike sets from the level's AI markersets,
+			// one markerset per variant group.
+			void BuildDirectorSpawner();
+			// Spawns what the director's points give for where the heroes are now.
+			void UpdateDirector();
 			// TEST_ENEMIES_AT_SPAWN: the level's special enemies around the player's spawn point, for testing.
 			void SpawnTestEnemies(const PlayerPtr& player);
 
@@ -337,6 +346,14 @@ namespace Game {
 			bool mGameStarted = false;
 			bool mLevelLoaded = false;
 			bool mTeleportersCreated = false;
+
+			// The AI director (docs/director.md): the level's enemy types by section, and its spawn points.
+			DefaultDirectorRandom mDirectorRandom;
+			DirectorPool mDirectorPool {};
+			DirectorSpawner mDirectorSpawner;
+			uint32_t mDirectorDifficulty = 1;
+			bool mDirectorBuilt = false;
+			uint64_t mDirectorTime = 0;
 
 			friend class GameManager;
 	};

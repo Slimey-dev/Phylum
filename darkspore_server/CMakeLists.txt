@@ -159,6 +159,8 @@ add_executable(recap_tests
     tests/projectilepasslist_test.cpp
     tests/walktimer_test.cpp
     tests/effectlist_test.cpp
+    tests/director_test.cpp
+    tests/directorspawner_test.cpp
     source/game/scriptsource.cpp
     source/game/scriptgaps.cpp
     source/game/projectilesweep.cpp
@@ -189,6 +191,8 @@ add_executable(recap_tests
     source/game/projectilepasslist.cpp
     source/game/walktimer.cpp
     source/game/effectlist.cpp
+    source/game/director.cpp
+    source/game/directorspawner.cpp
     source/utils/casepath.cpp
     source/game/level.cpp
     source/game/collision.cpp

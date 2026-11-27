@@ -58,11 +58,14 @@ Done when: every hero's abilities run in play, effects apply and expire, and loa
 
 Make one level, 1-1, play properly.
 
-- [ ] Spawn every enemy from the level's marker sets, removing the temporary one per group limit
+- [x] Spawn every enemy from the level's marker sets, removing the temporary one per group limit:
+      the director's wander points and spikes (docs/director.md); hordes and the boss are still to come
 - [ ] Build level triggers (spawn, teleporter, checkpoint) on `TriggerArea` and `TriggerOccupancy`, with the hero-only modes, once-only and dwell time the client keeps (see `docs/abilities.md`), then remove the old `TriggerVolume` object class
 - [ ] Read how `aidefinition` and `phase` data drive enemies
 - [ ] Build the enemy AI: aggro, movement and using abilities
-- [ ] Use `directortuning` and `difficultytuning` for pacing and scaling
+- [ ] Use `directortuning` and `difficultytuning` for pacing and scaling (the exported DirectorTuning
+      is misnamed: it holds OrbDifficultyScale and HordeDifficultyWave; the health and damage tables
+      are in DifficultyTuning)
 - [ ] Hero death, squad swapping and level failure
 - [ ] Health obelisks and orb drops
 - [ ] Replace placeholder enemy hit reactions

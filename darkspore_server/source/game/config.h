@@ -37,6 +37,9 @@ namespace Game {
 		// true lets mobs run their AI gambits too. Off, only hero summons (pets, turrets) do, and mobs
 		// keep the first-aggro cast they had before.
 		CONFIG_AI_MOBS,
+		// true lets the AI director spawn the level's enemies from its wander and spike points
+		// (docs/director.md). false spawns none, apart from TEST_ENEMIES_AT_SPAWN.
+		CONFIG_DIRECTOR_SPAWNS,
 		CONFIG_END
 	};
 

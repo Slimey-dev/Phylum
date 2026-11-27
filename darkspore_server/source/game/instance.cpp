@@ -156,37 +156,39 @@ namespace Game {
 		std::string levelName = mChainData.GetName().data();
 		mLevelLoaded = mLevel.Load(mChainData.GetDifficultyName(), levelName);
 		if (mLevelLoaded) {
-			LevelConfig config;
-			if (mChainData.IsCompleted()) {
-				config = mLevel.GetConfig();
-			} else {
-				config = mLevel.GetFirstTimeConfig();
-			}
+			// The level's enemy types, as the client's director picks them (0x9fc445): on a first visit
+			// the firstTimeConfig entries for this difficulty, falling back to levelConfig when that has
+			// no minions. The client's repeat visit also mixes in the planet and element configs
+			// (0x9fc150); that is not built, so a repeat visit uses levelConfig alone (approximate).
+			mDirectorDifficulty = std::max<uint32_t>(mChainData.GetLevelIndex(), 1);
+			const auto chooseFrom = [this](const LevelConfig& config) {
+				return ChooseLevelPool(GetDirectorEntries(config.GetMinions()), GetDirectorEntries(config.GetSpecials()),
+					mDirectorDifficulty, mDirectorRandom);
+			};
 
+			DirectorSection levelPool = chooseFrom(mChainData.IsCompleted() ? mLevel.GetConfig() : mLevel.GetFirstTimeConfig());
+			if (levelPool.minions.empty() && !mChainData.IsCompleted()) {
+				levelPool = chooseFrom(mLevel.GetConfig());
+			}
+			mDirectorPool = AllocateSections(levelPool, DefaultSectionBuckets(), mDirectorDifficulty, mDirectorRandom);
+
+			// The six enemies the client preloads (ChainVoteMsgs). A slot with no enemy stays 0: the
+			// hash of an empty name is no noun, and the client's preload does not check for one.
 			const auto& nounDatabase = NounDatabase::Instance();
-			for (uint32_t i = 0; i < 3; ++i) {
-				const auto& minion = config.GetMinion(i);
-				const auto& minionNounName = minion.GetNounName();
-				mChainData.SetEnemyNoun(minionNounName, i);
+			std::cout << "Director: difficulty " << mDirectorDifficulty << ", enemies";
+			for (uint32_t i = 0; i < directorLevelPoolSize; ++i) {
+				const uint32_t minion = i < levelPool.minions.size() ? levelPool.minions[i].noun : 0;
+				const uint32_t special = i < levelPool.specials.size() ? levelPool.specials[i].noun : 0;
+				mChainData.SetEnemyNounId(minion, i);
+				mChainData.SetEnemyNounId(special, i + directorLevelPoolSize);
 
-				const auto& special = config.GetSpecial(i);
-				const auto& specialNounName = special.GetNounName();
-				mChainData.SetEnemyNoun(specialNounName, i + 3);
-
-				if (!minionNounName.empty()) {
-					auto noun = nounDatabase.Get(utils::hash_id(minionNounName));
-					if (auto npcData = noun->GetNonPlayerClassData()) {
-						std::cout << npcData->GetName() << std::endl;
-					}
-				}
-
-				if (!specialNounName.empty()) {
-					auto noun = nounDatabase.Get(utils::hash_id(special.GetNounName()));
-					if (auto npcData = noun->GetNonPlayerClassData()) {
-						std::cout << npcData->GetName() << std::endl;
+				for (const uint32_t id : { minion, special }) {
+					if (const auto noun = id ? nounDatabase.Get(id) : nullptr) {
+						std::cout << " " << noun->GetName();
 					}
 				}
 			}
+			std::cout << std::endl;
 
 			Markerset markerset;
 			if (mLevel.GetMarkerset(levelName + "_design.Markerset", markerset)) {
@@ -476,56 +478,10 @@ namespace Game {
 				}
 			}
 
-			const auto enemyNouns = GetUsableEnemyNouns();
-			const auto TestEnemy = [this, &enemyNouns](const auto& markerset) {
-				for (const auto& marker : markerset.GetMarkers()) {
-					mMarkers[marker->GetId()] = marker;
-
-					switch (marker->GetNoun()) {
-						case utils::hash_id("SpawnPoint_Director.Noun"):
-						case utils::hash_id("SpawnPoint_DirectorA.Noun"):
-						case utils::hash_id("SpawnPoint_DirectorB.Noun"):
-						case utils::hash_id("SpawnPoint_DirectorWanderer.Noun"):
-						{
-							if (enemyNouns.empty()) {
-								break;
-							}
-
-							const auto noun = enemyNouns[utils::random::get<size_t>(0, enemyNouns.size() - 1)];
-							const auto& object = mObjectManager->Create(noun);
-							if (object) {
-								object->SetPosition(marker->GetPosition());
-								object->SetOrientation(marker->GetRotation());
-							}
-							break;
-						}
-
-						default:
-						{
-							std::cout << "Unknown enemy noun: '" << marker->GetNounName() << "'" << std::endl;
-							break;
-						}
-					}
-
-					// temporary
-					break;
-				}
-			};
-
-			if (mLevel.GetMarkerset(levelName + "_AI_Wander.Markerset", markerset)) {
-				TestEnemy(markerset);
-			}
-			
-			if (mLevel.GetMarkerset(levelName + "_AI_WandererA.Markerset", markerset) || mLevel.GetMarkerset(levelName + "_AI_Wanderers_A.Markerset", markerset)) {
-				TestEnemy(markerset);
-			}
-
-			if (mLevel.GetMarkerset(levelName + "_AI_WandererB.Markerset", markerset) || mLevel.GetMarkerset(levelName + "_AI_Wanderers_B.Markerset", markerset)) {
-				TestEnemy(markerset);
-			}
-
-			if (mLevel.GetMarkerset(levelName + "_AI_WandererC.Markerset", markerset) || mLevel.GetMarkerset(levelName + "_AI_Wanderers_C.Markerset", markerset)) {
-				TestEnemy(markerset);
+			// The director's spawn points, once per game: each arriving player runs this.
+			if (!mDirectorBuilt) {
+				mDirectorBuilt = true;
+				BuildDirectorSpawner();
 			}
 
 			SpawnTestEnemies(player);
@@ -619,6 +575,13 @@ namespace Game {
 			mModifiers->Update();
 			SendPendingCreates();
 			mObjectManager->Update(delta / 1000.f); // Maybe send update time so we can compensate for lag?
+
+			// The director looks at where the heroes are four times a second.
+			if (newGameTime - mDirectorTime >= 250) {
+				mDirectorTime = newGameTime;
+				UpdateDirector();
+			}
+
 			for (const auto& [_, player] : mPlayers) {
 				SendLabsPlayerUpdate(player);
 			}
@@ -640,15 +603,145 @@ namespace Game {
 
 	// The level's enemy nouns that really exist. There are six slots (3 minions, 3 specials),
 	// and unused ones hold the hash of an empty name, which ObjectManager::Create would accept.
-	std::vector<uint32_t> Instance::GetUsableEnemyNouns() const {
-		std::vector<uint32_t> result;
+	std::vector<DirectorClassEntry> Instance::GetDirectorEntries(const std::vector<DirectorClass>& classes) const {
 		const auto& nouns = NounDatabase::Instance();
-		for (uint32_t i = 0; i < 6; ++i) {
-			if (const auto noun = mChainData.GetEnemyNoun(i); nouns.Get(noun)) {
-				result.push_back(noun);
+		std::vector<DirectorClassEntry> entries;
+		for (const auto& directorClass : classes) {
+			const auto& name = directorClass.GetNounName();
+			if (name.empty()) {
+				continue;
+			}
+
+			const uint32_t id = utils::hash_id(name);
+			const auto noun = nouns.Get(id);
+			if (!noun) {
+				// Only worth a word when this run could have used it: the tier 2 and 3 nouns are filed
+				// under their hashes and are not found by name yet (docs/director.md).
+				const auto minLevel = static_cast<uint32_t>(std::max(directorClass.GetMinLevel(), 0));
+				const auto maxLevel = static_cast<uint32_t>(std::max(directorClass.GetMaxLevel(), 0));
+				if (minLevel <= mDirectorDifficulty && mDirectorDifficulty <= maxLevel) {
+					std::cout << "Director: the server has no noun " << name << std::endl;
+				}
+				continue;
+			}
+
+			const auto& npcClass = noun->GetNonPlayerClassData();
+			entries.push_back({
+				id,
+				static_cast<uint32_t>(std::max(directorClass.GetMinLevel(), 0)),
+				static_cast<uint32_t>(std::max(directorClass.GetMaxLevel(), 0)),
+				directorClass.IsHordeLegal(),
+				npcClass ? npcClass->GetChallengeValue() : 0
+			});
+		}
+		return entries;
+	}
+
+	void Instance::BuildDirectorSpawner() {
+		// One markerset of each variant group, picked by weight as the client's 0x9d6340 does; group
+		// "none" always loads. The server rolls its own pick, since the client's seed
+		// (GamePrepareForStart) is not followed yet, so the client may show another variant's
+		// scenery. Only the director's markers are used from the pick.
+		std::vector<std::string> names;
+		std::map<std::string, std::vector<const MarkersetEntry*>> groups;
+		for (const auto& entry : mLevel.GetMarkersetEntries()) {
+			if (entry.group.empty() || utils::string_iequals(entry.group, "none")) {
+				names.push_back(entry.name);
+			} else {
+				groups[entry.group].push_back(&entry);
 			}
 		}
-		return result;
+
+		for (const auto& [group, entries] : groups) {
+			float total = 0.f;
+			for (const auto* entry : entries) {
+				total += std::max(entry->weight, 0.f);
+			}
+			if (total <= 0.f) {
+				continue;
+			}
+
+			float roll = mDirectorRandom.Unit() * total;
+			const MarkersetEntry* chosen = entries.back();
+			for (const auto* entry : entries) {
+				roll -= std::max(entry->weight, 0.f);
+				if (roll < 0.f) {
+					chosen = entry;
+					break;
+				}
+			}
+			names.push_back(chosen->name);
+		}
+
+		Markerset markerset;
+		for (const auto& name : names) {
+			if (!mLevel.GetMarkerset(name, markerset)) {
+				continue;
+			}
+
+			std::vector<DirectorSpawner::SpikePoint> spikePoints;
+			std::vector<uint32_t> spikeSections;
+			for (const auto& marker : markerset.GetMarkers()) {
+				switch (ClassifySpawnMarker(marker->GetNoun())) {
+					case DirectorSpawnKind::Wanderer:
+						mMarkers[marker->GetId()] = marker;
+						mDirectorSpawner.AddWanderPoint(marker->GetPosition(), marker->GetSpawnSection());
+						break;
+
+					case DirectorSpawnKind::Spike:
+						mMarkers[marker->GetId()] = marker;
+						// rotDegrees, which glm takes as radians.
+						spikePoints.push_back({ marker->GetPosition(), glm::quat(glm::radians(marker->GetRotation())) });
+						spikeSections.push_back(marker->GetSpawnSection());
+						break;
+
+					default:
+						// Hordes, the boss and the rest are not built yet (docs/director.md).
+						break;
+				}
+			}
+
+			if (!spikePoints.empty()) {
+				mDirectorSpawner.AddSpikeSet(name, std::move(spikePoints), MostCommonSection(spikeSections));
+			}
+		}
+
+		std::cout << "Director: " << mDirectorSpawner.GetWanderPointCount() << " wander points, "
+			<< mDirectorSpawner.GetSpikeSetCount() << " spike sets" << std::endl;
+	}
+
+	void Instance::UpdateDirector() {
+		if (!mDirectorBuilt || !Config::GetBool(ConfigKey::CONFIG_DIRECTOR_SPAWNS)) {
+			return;
+		}
+
+		std::vector<glm::vec3> heroes;
+		float health = 0.f;
+		float maxHealth = 0.f;
+		for (const auto& [_, player] : mPlayers) {
+			const auto& hero = player->GetDeployedCharacterObject();
+			if (!hero || hero->GetHealth() <= 0.f) {
+				continue;
+			}
+			heroes.push_back(hero->GetPosition());
+			health += hero->GetHealth();
+			maxHealth += hero->GetMaxHealth();
+		}
+		if (heroes.empty()) {
+			return;
+		}
+
+		// Approximate: the talk judges "doing well" by the players' health and how many creatures are
+		// alive; this looks at the heroes' health alone.
+		const bool doingWell = maxHealth <= 0.f || health >= 0.5f * maxHealth;
+		const auto spawns = mDirectorSpawner.Update(heroes, doingWell, mDirectorPool, mDirectorDifficulty, mDirectorRandom);
+		for (const auto& spawn : spawns) {
+			const auto& object = SpawnCreature(spawn.noun, spawn.position, spawn.orientation);
+			if (object && mLua) {
+				mLua->Trace(std::format("DIRECTOR {} {} object={} noun={}", spawn.source, spawn.point, object->GetId(),
+					object->GetNoun() ? object->GetNoun()->GetName() : "-"));
+			}
+		}
 	}
 
 	void Instance::SpawnTestEnemies(const PlayerPtr& player) {

@@ -300,6 +300,9 @@ namespace Game {
 
 			NpcType GetType() const;
 
+			// What the director pays for one of these in a group's budget (+0x24).
+			int32_t GetChallengeValue() const { return mChallengeValue; }
+
 			float GetAggroRange() const;
 			float GetAlertRange() const;
 			float GetDropAggroRange() const;
