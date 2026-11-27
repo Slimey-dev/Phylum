@@ -22,6 +22,9 @@ add_definitions(-D_WIN32_WINNT=0x0601 -D_CRT_SECURE_NO_WARNINGS -DWIN32_LEAN_AND
 add_definitions(-DBOOST_NETWORK_ENABLE_HTTPS -DBOOST_ASIO_DISABLE_CONCEPTS)
 add_definitions(-DRAPIDJSON_HAS_STDSTRING)
 add_definitions(-DSOL_STRINGS_ARE_NUMBERS=1 -DSOL_ALL_SAFETIES_ON=1 -DSOL_SAFE_FUNCTION=1 -DSOL_EXCEPTIONS_SAFE_PROPAGATION=1)
+# Lua 5.1 keeps lua.hpp in etc/, not src/. Without this, sol2 finds a system
+# lua.hpp (e.g. Lua 5.5 on Arch) and builds against the wrong Lua headers.
+add_definitions(-DSOL_NO_LUA_HPP=1)
 
 add_executable(recap_server ${RECAP_HEADERS} ${RECAP_SOURCES})
 source_group(TREE ${CMAKE_CURRENT_SOURCE_DIR} FILES ${RECAP_HEADERS} ${RECAP_SOURCES})
@@ -190,6 +193,11 @@ target_link_libraries(recap_tests PRIVATE lua pugixml)
 # Sol
 CPMAddPackage("gh:ThePhD/sol2@3.3.1")
 target_link_libraries(recap_server PRIVATE sol2)
+# sol2 3.3.1's optional<T&>::emplace calls a member that does not exist. It is
+# never instantiated, but GCC 14+ rejects it anyway unless this is turned off.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+    target_compile_options(recap_server PRIVATE -Wno-template-body)
+endif()
 
 # GLM
 CPMAddPackage(
